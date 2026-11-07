@@ -1,0 +1,82 @@
+@use '../../styles/common.scss' as *;
+
+/* pre os-ready */
+.dv-kernel {
+    $fsz: 12;
+
+    position: fixed;
+    width: 100vw;
+    height: 100vh;
+    margin: 0;
+    padding: 32px;
+    overflow: hidden;
+    box-sizing: border-box;
+    z-index: 10000;
+    //background-color: #101010;
+    //color: #c0c0c0;
+    font-size: #{$fsz}px;
+    font-family: var(--dv-font-family-code);
+
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+
+    & > div {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        min-height: #{$fsz + 2}px;
+        line-height: #{$fsz + 2}px;
+        overflow: hidden;
+        margin: 0;
+        padding: 0;
+
+        & > .dv-kernel-label {
+            min-width: #{$fsz * 10}px;
+            margin-right: #{$fsz}px;
+        }
+    }
+
+    .dv-kernel-logo {
+        min-height: #{$fsz * 4}px;
+    }
+
+    .dv-kernel-strong {
+        //min-height: #{$fsz + 8}px;
+        line-height: #{$fsz + 6}px;
+        font-size: #{$fsz + 2}px;
+        font-weight: bold;
+        color: var(--dv-color-white);
+        background-color: var(--dv-color-primary);
+    }
+
+    .dv-kernel-error {
+        color: var(--dv-color-danger);
+        font-weight: bold;
+    }
+
+    @keyframes cursor-blink {
+        0% {
+            opacity: 1;
+        }
+        30% {
+            opacity: 1;
+        }
+        50% {
+            opacity: 0;
+        }
+        80% {
+            opacity: 0;
+        }
+        100% {
+            opacity: 1;
+        }
+    }
+    .dv-kernel-cursor {
+        width: 8px;
+        background-color: var(--dv-color-text-regular);
+        animation-name: cursor-blink;
+        animation-duration: 1s;
+        animation-iteration-count: infinite;
+    }
+}

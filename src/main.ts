@@ -1,9 +1,7 @@
-import { createApp } from 'vue'
-import { createPinia } from 'pinia'
-import App from './App.vue'
+import * as Vue from 'vue'
+import * as Deskvue from './Deskvue'
 
-const app = createApp(App)
+globalThis.Vue = Vue
+globalThis.Deskvue = Deskvue
 
-app.use(createPinia())
-
-app.mount('#app')
+await Deskvue.start('#app')

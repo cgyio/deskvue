@@ -1,0 +1,7 @@
+/* animate.css patch */
+.animate__animated.animate__fadeInUp,
+.animate__animated.animate__fadeInDown,
+.animate__animated.animate__fadeOutUp,
+.animate__animated.animate__fadeOutDown {
+    --animate-duration: 0.5s;
+}

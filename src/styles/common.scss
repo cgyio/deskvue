@@ -1,0 +1,689 @@
+@use 'sass:color';
+@use 'sass:map';
+@use 'sass:math';
+
+$color-red: oklch(63.7% 0.237 25.331);
+$color-orange: oklch(70.5% 0.213 47.604);
+$color-amber: oklch(76.9% 0.188 70.08);
+$color-yellow: oklch(79.5% 0.184 86.047);
+$color-lime: oklch(76.8% 0.233 130.85);
+$color-green: oklch(72.3% 0.219 149.579);
+$color-emerald: oklch(69.6% 0.17 162.48);
+$color-teal: oklch(70.4% 0.14 182.503);
+$color-cyan: oklch(71.5% 0.143 215.221);
+$color-sky: oklch(68.5% 0.169 237.323);
+$color-blue: oklch(62.3% 0.214 259.815);
+$color-indigo: oklch(58.5% 0.233 277.117);
+$color-violet: oklch(60.6% 0.25 292.717);
+$color-purple: oklch(62.7% 0.265 303.9);
+$color-fuchsia: oklch(66.7% 0.295 322.15);
+$color-pink: oklch(65.6% 0.241 354.308);
+$color-rose: oklch(64.5% 0.246 16.439);
+$color-slate: oklch(55.4% 0.046 257.417);
+$color-gray: oklch(55.1% 0.027 264.364);
+$color-zinc: oklch(55.2% 0.016 285.938);
+$color-neutral: oklch(55.6% 0 0);
+$color-stone: oklch(55.3% 0.013 58.071);
+$color-mauve: oklch(54.2% 0.034 322.5);
+$color-olive: oklch(58% 0.031 107.3);
+$color-mist: oklch(56% 0.021 213.5);
+$color-taupe: oklch(54.7% 0.021 43.1);
+
+$color-primary: oklch(62.3% 0.214 259.815);
+$color-warning: oklch(76.9% 0.188 70.08);
+$color-danger: oklch(63.7% 0.237 25.331);
+$color-success: oklch(72.3% 0.219 149.579);
+$color-info: oklch(55.4% 0.046 257.417);
+
+$tw-colors: (
+    red: oklch(63.7% 0.237 25.331),
+    orange: oklch(70.5% 0.213 47.604),
+    amber: oklch(76.9% 0.188 70.08),
+    yellow: oklch(79.5% 0.184 86.047),
+    lime: oklch(76.8% 0.233 130.85),
+    green: oklch(72.3% 0.219 149.579),
+    emerald: oklch(69.6% 0.17 162.48),
+    teal: oklch(70.4% 0.14 182.503),
+    cyan: oklch(71.5% 0.143 215.221),
+    sky: oklch(68.5% 0.169 237.323),
+    blue: oklch(62.3% 0.214 259.815),
+    indigo: oklch(58.5% 0.233 277.117),
+    violet: oklch(60.6% 0.25 292.717),
+    purple: oklch(62.7% 0.265 303.9),
+    fuchsia: oklch(66.7% 0.295 322.15),
+    pink: oklch(65.6% 0.241 354.308),
+    rose: oklch(64.5% 0.246 16.439),
+    slate: oklch(55.4% 0.046 257.417),
+    gray: oklch(55.1% 0.027 264.364),
+    zinc: oklch(55.2% 0.016 285.938),
+    neutral: oklch(55.6% 0 0),
+    stone: oklch(55.3% 0.013 58.071),
+    mauve: oklch(54.2% 0.034 322.5),
+    olive: oklch(58% 0.031 107.3),
+    mist: oklch(56% 0.021 213.5),
+    taupe: oklch(54.7% 0.021 43.1),
+    primary: oklch(62.3% 0.214 259.815),
+    warning: oklch(76.9% 0.188 70.08),
+    danger: oklch(63.7% 0.237 25.331),
+    success: oklch(72.3% 0.219 149.579),
+    info: oklch(55.4% 0.046 257.417),
+    //primary: rgb(43 127 255),
+    //warning: rgb(254 154 0),
+    //danger: rgb(251 44 54),
+    //success: rgb(0 201 80),
+     //info: rgb(98 116 142),
+);
+
+$tw-color-names:
+    red, orange, amber, yellow, lime, green, emerald, teal, cyan, sky, blue, indigo, violet, purple,
+    fuchsia, pink, rose, slate, gray, zinc, neutral, stone, mauve, olive, mist, taupe;
+$tw-color-semantic-names: primary, warning, danger, success, info;
+$tw-color-all-names:
+    red, orange, amber, yellow, lime, green, emerald, teal, cyan, sky, blue, indigo, violet, purple,
+    fuchsia, pink, rose, slate, gray, zinc, neutral, stone, mauve, olive, mist, taupe, primary,
+    warning, danger, success, info;
+$tw-color-levels: 50, 100, 200, 300, 400, 600, 700, 800, 900, 950;
+
+/* 文字颜色 */
+$text-color-names: strong, primary, regular, light, lighter, holder, disabled;
+
+/* 尺寸名称 */
+$size-names: mini, small, default, medium, large;
+$size-steps: (
+    mini: -2,
+    small: -1,
+    //default: 0,
+    medium: 1,
+    large: 2,
+);
+
+/* functions */
+/* CSS 变量前缀 以及 样式类前缀 生成 */
+/* 默认：dv- */
+@function css-prefix($prefix: dv) {
+    @if $prefix == '' {
+        @return '';
+    }
+    @return $prefix + '-';
+}
+/* 读取定义的 CSS 变量，返回 var(...) 字符 */
+@function get-var($var-key) {
+    $pre: css-prefix();
+    @return var(--#{$pre}#{$var-key});
+}
+/* 将 yellow 这种可能被作为颜色处理的 颜色名称，转为字符串 */
+@function color-name($color-name: red) {
+    @return '' + $color-name;
+}
+/* 读取颜色定义值 */
+@function get-color($color-name: primary) {
+    $color: map.get($tw-colors, color-name($color-name));
+    @return $color;
+}
+/* 颜色明暗变换，$level 取值范围 50~950，500(原色)，50(极亮)，950(极暗)，暗黑模式下反向 */
+@function oklch-shade($color, $level: 500, $mode: light) {
+    $delta: 1 + math.div(500 - $level, 500);
+    @if $mode != light {
+        $delta: 1 - math.div(500 - $level, 500);
+    }
+    @return oklch(from #{$color} calc(l * #{$delta}) c h);
+}
+/* 颜色透明度变换，$level 取值范围 0~100 越大越透明 */
+@function oklch-alpha($color, $level: 30) {
+    $scale: math.div(100 - $level, 100);
+    @return oklch(from #{$color} l c h / #{$scale});
+}
+/* 颜色变淡，使用 color.mix 根据暗黑模式开关，混合不同程度的 #fff 或 #000 */
+/* 0% 返回原色，100% 返回黑白色 */
+@function color-weak($color, $level: 50%, $mode: light) {
+    $mix: #fff;
+    @if $mode != light {
+        $mix: #000;
+    }
+    @return color.mix($mix, $color, $level, $method: srgb);
+}
+/* 获取黑色，$level 表示黑色的程度，暗黑模式下反向 */
+/* 100% 返回纯黑，0% 返回纯白，暗黑模式下反向 */
+@function color-black($level: 100%, $mode: light) {
+    $from: #000;
+    $mix: #fff;
+    @if $mode != light {
+        $from: #fff;
+        $mix: #000;
+    }
+    @return color.mix($from, $mix, $level, $method: srgb);
+}
+@function color-white($level: 100%, $mode: light) {
+    $from: #fff;
+    $mix: #000;
+    @if $mode != light {
+        $from: #000;
+        $mix: #fff;
+    }
+    @return color.mix($from, $mix, $level, $method: srgb);
+}
+
+/* mixins */
+/* 颜色变体变量 --$pre-color-red-50~950 生成器 */
+@mixin color-vars($mode: light) {
+    $pre: css-prefix();
+    @each $color-name in $tw-color-all-names {
+        $color: get-color($color-name);
+
+        @if $color != null {
+            $cln: color-name($color-name);
+
+            --#{$pre}color-#{$cln}: #{$color};
+            --#{$pre}color-#{$cln}-500: #{$color};
+
+            @each $level in $tw-color-levels {
+                --#{$pre}color-#{$cln}-#{$level}: #{oklch-shade($color, $level, $mode)};
+            }
+        }
+    }
+}
+/* 语义颜色小范围深浅变化 --$pre-color-primary-light|dark-1~9 */
+@mixin color-lightness-vars($mode: light) {
+    $pre: css-prefix();
+    @each $color-name in $tw-color-semantic-names {
+        $color: get-color($color-name);
+
+        @if $color != null {
+            $cln: color-name($color-name);
+
+            @for $n from 1 through 9 {
+                $light-lvl: 500 - $n * 25;
+                $dark-lvl: 500 + $n * 25;
+                $light: oklch-shade($color, $light-lvl, $mode);
+                $dark: oklch-shade($color, $dark-lvl, $mode);
+
+                --#{$pre}color-#{$cln}-light-#{$n}: #{$light};
+                --#{$pre}color-#{$cln}-dark-#{$n}: #{$dark};
+            }
+        }
+    }
+}
+/* 文字颜色 --$pre-color-text-* */
+@mixin color-text-vars($mode: light) {
+    $pre: css-prefix();
+    --#{$pre}color-text-strong: #{color-black(100%, $mode)};
+    --#{$pre}color-text-primary: #{color-black(85%, $mode)};
+    --#{$pre}color-text-regular: #{color-black(65%, $mode)};
+    --#{$pre}color-text-light: #{color-black(50%, $mode)};
+    --#{$pre}color-text-lighter: #{color-black(40%, $mode)};
+    --#{$pre}color-text-holder: #{color-black(30%, $mode)};
+    --#{$pre}color-text-disabled: #{color-black(20%, $mode)};
+}
+/* 背景色 --$pre-color-bg-*  */
+/* 默认背景色 zinc */
+@mixin color-bg-vars($mode: light, $bg-color: zinc) {
+    $pre: css-prefix();
+    $base-color: get-color($bg-color);
+
+    //纯白背景，暗黑模式下反向
+    --#{$pre}color-bg-white: #{color-white(100%, $mode)};
+
+    //默认背景，淡 -> 重
+    --#{$pre}color-bg-light: #{oklch-shade($base-color, 50, $mode)};
+    --#{$pre}color-bg: #{oklch-shade($base-color, 100, $mode)};
+    --#{$pre}color-bg-dark: #{oklch-shade($base-color, 150, $mode)};
+    //基于亮度数字的背景色序列，数字越大越暗，50 步进，50 ~ 500(纯色)
+    @for $l from 1 through 10 {
+        $lvl: $l * 50;
+        --#{$pre}color-bg-#{$lvl}: #{oklch-shade($base-color, $lvl, $mode)};
+    }
+
+    //hover 悬停反转基础背景
+    $base-hover: oklch-shade($base-color, 900, $mode);
+    //悬停背景，加透明度，淡 -> 重
+    --#{$pre}color-bg-hover-light: #{oklch-alpha($base-hover, 97)};
+    --#{$pre}color-bg-hover: #{oklch-alpha($base-hover, 95)};
+    --#{$pre}color-bg-hover-dark: #{oklch-alpha($base-hover, 90)};
+    //基于透明度数字的 悬停背景，数字越大越透明
+    @for $al from 80 through 99 {
+        --#{$pre}color-bg-hover-#{$al}: #{oklch-alpha($base-hover, $al)};
+    }
+
+    //语义色背景，淡 -> 重
+    @each $color-name in $tw-color-semantic-names {
+        $color: get-color($color-name);
+        $cln: color-name($color-name);
+
+        --#{$pre}color-bg-#{$cln}-lightest: #{oklch-shade($color, 50, $mode)};
+        --#{$pre}color-bg-#{$cln}-lighter: #{oklch-shade($color, 200, $mode)};
+        --#{$pre}color-bg-#{$cln}-light: #{oklch-shade($color, 350, $mode)};
+        --#{$pre}color-bg-#{$cln}: #{$color};
+        --#{$pre}color-bg-#{$cln}-dark: #{oklch-shade($color, 650, $mode)};
+        --#{$pre}color-bg-#{$cln}-darker: #{oklch-shade($color, 800, $mode)};
+        --#{$pre}color-bg-#{$cln}-darkest: #{oklch-shade($color, 950, $mode)};
+    }
+
+    //特殊背景色
+
+    //OS 启动界面背景
+    --#{$pre}color-bg-os: #{oklch-alpha(#000000, 80)};
+
+    //modal 遮罩层透明背景
+    $color-modal: oklch-shade($base-color, 950, light);
+    $malpha: 70;
+    @if $mode != light {
+        $malpha: 40;
+    }
+    --#{$pre}color-bg-modal: #{oklch-alpha($color-modal, $malpha)};
+}
+/* 边框色 --$pre-color-border-* */
+/* 默认边框色 zinc */
+@mixin color-border-vars($mode: light, $bd-color: zinc) {
+    $pre: css-prefix();
+    $base-color: get-color($bd-color);
+    $base-bdc: oklch-shade($base-color, 900, $mode);
+    //基于深色 + 透明度，生成边框颜色
+    $bd-alpha: 90;
+    $bd-alphas: (
+        light: 95,
+        dark: 80,
+        darker: 85,
+    );
+    @if $mode != light {
+        $bd-alpha: 85;
+        $bd-alphas: (
+            light: 88,
+            dark: 78,
+            darker: 75,
+        );
+    }
+    $bd-alpha-names: light, dark, darker;
+
+    //默认边框色
+    --#{$pre}color-border: #{oklch-alpha($base-bdc, $bd-alpha)};
+    @each $an in $bd-alpha-names {
+        $al: map.get($bd-alphas, $an);
+        --#{$pre}color-border-#{$an}: #{oklch-alpha($base-bdc, $al)};
+    }
+}
+/* 阴影色 --$pre-color-shadow-* */
+/* 默认阴影色 zinc */
+@mixin color-shadow-vars($mode: light, $sd-color: zinc) {
+    $pre: css-prefix();
+    $base-color: get-color($sd-color);
+    $base-sdc: oklch-shade($base-color, 950, $mode);
+    //基于深色 + 透明度，生成阴影颜色
+    $sd-alpha: 80;
+    $sd-alphas: (
+        light: 90,
+        dark: 70,
+    );
+    @if $mode != light {
+        $sd-alpha: 30;
+        $sd-alphas: (
+            light: 20,
+            dark: 40,
+        );
+    }
+    $sd-alpha-names: light, dark;
+
+    //默认阴影色
+    --#{$pre}color-shadow: #{oklch-alpha($base-sdc, $sd-alpha)};
+    @each $an in $sd-alpha-names {
+        $al: map.get($sd-alphas, $an);
+        --#{$pre}color-shadow-#{$an}: #{oklch-alpha($base-sdc, $al)};
+    }
+}
+/* 通用尺寸 shift --$pre-size-*-mini~large */
+@mixin size-any-vars($property: row, $base: 32, $step: 4) {
+    $pre: css-prefix();
+    --#{$pre}size-#{$property}: #{$base}px;
+    @each $sz in $size-names {
+        $d: map.get($size-steps, $sz);
+        @if $d != null {
+            $dsz: $d * $step;
+            $szv: $base + $dsz;
+
+            --#{$pre}size-#{$property}-#{$sz}: #{$szv}px;
+        }
+    }
+}
+/* 字号 --$pre-size-font-* */
+@mixin size-font-vars($base: 14, $step: 2) {
+    @include size-any-vars(font, $base, $step);
+}
+/* 图标尺寸 --$pre-size-icon-* */
+@mixin size-icon-vars($base: 21, $step: 3) {
+    @include size-any-vars(icon, $base, $step);
+}
+/* 行尺寸 --$pre-size-row-* */
+@mixin size-row-vars($base: 32, $step: 4) {
+    @include size-any-vars(row, $base, $step);
+}
+/* 间距尺寸 --$pre-size-gap-* */
+@mixin size-gap-vars($base: 16, $step: 4) {
+    @include size-any-vars(gap, $base, $step);
+}
+/* 圆角尺寸 --$pre-size-radius-* */
+@mixin size-radius-vars($base: 8, $step: 2) {
+    @include size-any-vars(radius, $base, $step);
+}
+/* 在不同的 明暗模式下，批量定义 CSS 变量 */
+@mixin define-vars($mode: light) {
+    $pre: css-prefix();
+
+    /* 定义 Deskvue 主题变量 */
+
+    /* 暗黑模式 */
+    --#{$pre}mode: #{$mode};
+
+    /* 主题色，基于 tailwind */
+    @include color-vars($mode);
+    @include color-lightness-vars($mode);
+    @include color-text-vars($mode);
+    @include color-bg-vars($mode);
+    @include color-border-vars($mode);
+    @include color-shadow-vars($mode);
+    //黑白色
+    --#{$pre}color-white: #{color-white(100%, $mode)};
+    --#{$pre}color-black: #{color-black(100%, $mode)};
+
+    /* 其他与暗黑模式无关的变量，在 light 模式下定义一次即可 */
+    @if $mode == light {
+        /* 尺寸系统，tailwind 尺寸系统也可用 */
+        @include size-font-vars();
+        @include size-icon-vars();
+        @include size-row-vars();
+        @include size-gap-vars();
+        @include size-radius-vars();
+
+        /* font-family */
+        --#{$pre}font-family:
+            'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei',
+            '微软雅黑', Arial, sans-serif;
+        --#{$pre}font-family-code:
+            'Cascadia Code', 'Consolas', 'Courier New', 'Pingfang SC', 'Microsoft Yahei', monospace;
+
+        /* ani-duration */
+        --#{$pre}ani-trans-slow: 0.5s;
+        --#{$pre}ani-trans: 0.3s;
+        --#{$pre}ani-trans-fast: 0.2s;
+    }
+}
+
+/* 全局 CSS 变量定义 */
+:root {
+    @include define-vars(light);
+}
+/* 暗黑模式 */
+html.dark {
+    @include define-vars(dark);
+}
+
+/* dv functions */
+@function dv-bg-alpha($level: 10) {
+    @return oklch-alpha(var(--dv-color-bg), 100 - $level);
+}
+
+/* util mixins */
+/* 基础元素 */
+@mixin base-elm(
+    $po: relative,
+    $l: unset,
+    $t: unset,
+    $r: unset,
+    $b: unset,
+    $w: unset,
+    $h: unset,
+    $mg: unset,
+    $pd: unset,
+    $ov: hidden,
+    $box: border-box
+) {
+    position: $po;
+    @if $l != unset {
+        left: $l;
+    }
+    @if $t != unset {
+        top: $t;
+    }
+    @if $r != unset {
+        right: $r;
+    }
+    @if $b != unset {
+        bottom: $b;
+    }
+    @if $w != unset {
+        width: $w;
+    }
+    @if $h != unset {
+        height: $h;
+    }
+    @if $mg != unset {
+        margin: $mg;
+    }
+    @if $pd != unset {
+        padding: $pd;
+    }
+    overflow: $ov;
+    box-sizing: $box;
+}
+/* flex-box */
+@mixin base-flex($dir: unset, $align: unset, $justify: unset) {
+    display: flex;
+    @if $dir != unset {
+        flex-direction: $dir;
+    }
+    @if $align != unset {
+        align-items: $align;
+    }
+    @if $justify != unset {
+        justify-content: $justify;
+    }
+}
+@mixin flex-x($align: center, $justify: start) {
+    @include base-flex($align: #{$align}, $justify: #{$justify});
+}
+@mixin flex-y($align: start, $justify: start) {
+    @include base-flex($dir: column, $align: #{$align}, $justify: #{$justify});
+}
+@mixin flex-cc {
+    @include base-flex($align: center, $justify: center);
+}
+@mixin flex-y-cc {
+    @include base-flex($dir: column, $align: center, $justify: center);
+}
+/* 默认毛玻璃效果 */
+@mixin base-backdrop($bgc: unset, $alpha: 16, $blur: 20px, $brightness: 1.05, $saturate: 1.8) {
+    @if $bgc == unset {
+        $bgc: get-var(color-bg);
+    }
+    background-color: oklch-alpha($bgc, $alpha);
+    backdrop-filter: blur($blur) brightness($brightness) saturate($saturate);
+}
+
+/* Deskvue utils */
+@layer utilities {
+    $pre: css-prefix();
+
+    /* 前景色|背景色 类 .{$pre}color-* */
+    @each $c in $tw-color-all-names {
+        $cln: color-name($c);
+
+        $bc: get-var(color-#{$cln});
+        .#{$pre}color-#{$cln} {
+            color: #{$bc};
+        }
+        .#{$pre}bg-#{$cln} {
+            background-color: #{$bc};
+        }
+    }
+
+    /* 文字颜色类 .{$pre}text-* */
+    @each $c in $text-color-names {
+        $cln: color-name($c);
+        $tc: get-var(color-text-#{$cln});
+        .#{$pre}text-#{$cln} {
+            color: #{$tc};
+        }
+    }
+    /* 文字尺寸类 .{$pre}font-* */
+    @each $sz in $size-names {
+        $szv: get-var(size-font-#{$sz});
+        .#{$pre}font-#{$sz} {
+            font-size: #{$szv};
+        }
+        .#{$pre}font-default {
+            font-size: #{get-var(size-font)};
+        }
+    }
+
+    /* base-elm */
+    .#{$pre}base-elm {
+        @include base-elm;
+    }
+
+    /* flex-box */
+    .#{$pre}flex-x {
+        @include flex-x;
+    }
+    .#{$pre}flex-y {
+        @include flex-y;
+    }
+    .#{$pre}flex-cc {
+        @include flex-cc;
+    }
+    .#{$pre}flex-y-cc {
+        @include flex-y-cc;
+    }
+    @for $i from 1 through 6 {
+        .#{$pre}flex-#{$i} {
+            flex: $i;
+        }
+    }
+
+    /* 边框样式类 .{$pre}bd-* */
+    .#{$pre}bd {
+        //border-style
+        border-style: solid;
+        $bd-styles: solid, dotted, dashed;
+        @each $sty in $bd-styles {
+            &.bd-#{$sty} {
+                border-style: $sty;
+            }
+        }
+
+        //border-width
+        border-width: 1px;
+        &.bd-t {
+            border-width: 1px 0 0 0;
+        }
+        &.bd-r {
+            border-width: 0 1px 0 0;
+        }
+        &.bd-b {
+            border-width: 0 0 1px 0;
+        }
+        &.bd-l {
+            border-width: 0 0 0 1px;
+        }
+        &.bd-x {
+            border-width: 0 1px 0 1px;
+        }
+        &.bd-y {
+            border-width: 1px 0 1px 0;
+        }
+        &.bd-tr,
+        &.bd-tb,
+        &.bd-tl,
+        &.bd-rb,
+        &.bd-rl,
+        &.bd-bl {
+            border-width: 0px;
+        }
+        &.bd-tr,
+        &.bd-tb,
+        &.bd-tl {
+            border-top-width: 1px;
+        }
+        &.bd-tr,
+        &.bd-rb,
+        &.bd-rl {
+            border-right-width: 1px;
+        }
+        &.bd-tb,
+        &.bd-rb,
+        &.bd-bl {
+            border-bottom-width: 1px;
+        }
+        &.bd-tl,
+        &.bd-rl,
+        &.bd-bl {
+            border-left-width: 1px;
+        }
+        &.bd-trb {
+            border-left-width: 0px;
+        }
+        &.bd-tbl {
+            border-right-width: 0px;
+        }
+        &.bd-brl {
+            border-top-width: 0px;
+        }
+        &.bd-trl {
+            border-bottom-width: 0px;
+        }
+
+        //border-color
+        border-color: #{get-var(color-border)};
+        &.bd-light {
+            border-color: #{get-var(color-border-light)};
+        }
+        &.bd-dark {
+            border-color: #{get-var(color-border-dark)};
+        }
+        &.bd-darker {
+            border-color: #{get-var(color-border-darker)};
+        }
+    }
+
+    /* 阴影样式类 .{$pre}shadow-* */
+    .#{$pre}shadow {
+        --sdc: #{get-var(color-shadow)};
+        --sdv: 4px 8px 16px var(--sdc);
+        &.shadow-light {
+            --sdc: #{get-var(color-shadow-light)};
+        }
+        &.shadow-dark {
+            --sdc: #{get-var(color-shadow-dark)};
+        }
+        &.shadow-thin {
+            --sdv: 2px 4px 8px var(--sdc);
+        }
+        &.shadow-bold {
+            --sdv: 4px 8px 24px var(--sdc);
+        }
+
+        //box-shadow
+        &:not(.drop-shadow) {
+            box-shadow: var(--sdv);
+        }
+
+        //drop-shadow
+        &.drop-shadow {
+            filter: drop-shadow(var(--sdv));
+        }
+    }
+}
+
+/* Deskvue 基础样式 */
+@layer base {
+    /* Deskvue body */
+    body {
+        @include base-elm($w: 100vw, $h: 100vh, $mg: 0, $pd: 0);
+
+        background-color: #{get-var(color-bg)};
+        border: none;
+        font: {
+            size: #{get-var(size-font)};
+            family: #{get-var(font-family)};
+            weight: normal;
+        }
+        color: #{get-var(color-text-regular)};
+    }
+}
