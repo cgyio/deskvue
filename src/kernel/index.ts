@@ -35,6 +35,7 @@ import type { DvOsProps } from './os/index.vue'
 import { sysCall } from './apis'
 import { useDvKernelStage, type DvKernelStageHook } from './utils'
 import { start as fsStart, type DvFsInitOption, sysCall as fsSysCall } from './fs'
+import { setupDvKernelServices } from './os/service/index.ts'
 import { plugin, type DvPluginOption } from './plugin'
 import { dvIs, dvWait, dvCamel, dvKabab, dvTrimAny } from '@/utils'
 
@@ -46,6 +47,8 @@ export interface DvKernelStartOption {
     fs?: Partial<DvFsInitOption>
     //Plugin 插件的 install 参数
     plugin?: Partial<DvPluginOption>
+    //各系统服务程序组件的 启动 props
+    service?: Record<string, PlainObject>
 
     [K: string]: any
 }
@@ -54,8 +57,10 @@ export interface DvKernelStartOption {
 export interface DvKernelGlobal {
     //内核状态机
     stage: DvKernelStageHook
+    //将启动参数 响应式缓存
+    options: Ref<DvKernelStartOption>
     //DvOs 组件启动 props 临时挂载，响应式数据
-    osProps: Ref<Partial<DvOsProps>>
+    //osProps: Ref<Partial<DvOsProps>>
     //内核错误收集列表
     errors: DvKernelError[]
     //对外暴露的 sysCall 内核接口调用入口
@@ -83,8 +88,9 @@ export const start = async (
             g.DvKernel = {
                 //!! 默认 stage = booting
                 stage: useDvKernelStage(),
+                options: ref<DvKernelStartOption>(options ?? {}),
                 //响应式挂载 DvOs 组件启动 props
-                osProps: ref<Partial<DvOsProps>>(options?.os ?? {}),
+                //osProps: ref<Partial<DvOsProps>>(options?.os ?? {}),
                 errors: [],
                 //全局可用的 内核方法
                 sysCall,
@@ -107,7 +113,8 @@ export const start = async (
             throw new DvKernelError('发生内核错误，Vue 根实例重复创建')
         }
         //!! DvOs 根组件 props 必须定义在 options.os
-        const app = createApp(DvOs, gdk.osProps.value)
+        if (!gdk.options.value?.os) gdk.options.value.os = {}
+        const app = createApp(DvOs, gdk.options.value.os)
         //暴露 app 实例到全局
         g.DvApp = app
         //DvOs 注册到全局，/sys/prog0 指向了此组件，需要读取其 programMeta
@@ -129,7 +136,9 @@ export const start = async (
         await dvWait(10)
 
         //  4   os-initing：Vue plugin install 以及 业务库注册
-        // //!! Deskvue plugin 的 install 参数必须定义在 options.plugin
+        //!! 注册系统内核服务组件
+        setupDvKernelServices(app)
+        //!! Deskvue plugin 的 install 参数必须定义在 options.plugin
         app.use(plugin, (options?.plugin ?? {}) as DvPluginOption)
         await dvWait(50)
         //在 plugin-install 以及 业务库的 plugin-install 方法中，已经提取了 程序和服务组件
@@ -143,14 +152,14 @@ export const start = async (
         stage.stageNext()
         await dvWait(10)
 
+        //!! panic 测试
+        //throw new DvKernelError('手动模拟内核崩溃', { level: 'PANIC' })
+
         //  5   os-mounting：DvOs 根组件挂载
         app.mount(el)
         //!! 后续的 内核启动阶段推进 转移到 DvOs 组件内部
 
         return app
-
-        //!! panic 测试
-        //throw new DvKernelError('手动模拟内核崩溃', { level: 'PANIC' })
     } catch (e: any) {
         dvTriggerKernelError(e, 'PANIC')
     }
@@ -164,14 +173,14 @@ export const start = async (
 //error
 export * from './error'
 
-//DvOs 根组件
-//export { DvOs }
-export { DV_OS_PROVIDE, type DvOsProvide } from './os/types'
-export type * from './os/index.vue'
-export type * from './os/types'
+//DvOs 根组件 相关导出
+export * from './os'
 
-//FS 文件系统 类型导出
+//FS 文件系统 相关导出
 export * from './fs'
+
+//导出 DvConfigDefine 系统配置参数结构，以及原始配置
+export * from './config'
 
 //DV_PROVIDE
 export { DV_PROVIDE, type DvProvide } from './plugin'

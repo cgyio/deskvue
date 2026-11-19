@@ -377,6 +377,11 @@ export const dvFsInodeChrTypes = [
     //!! WebUSB 接口连接的设备需要用户主动发起连接
     //!! 因此无法在内核初始化时自动挂载，只有用户主动连接时，才会挂载
     'usb',
+    //驱动，将一系列相关的功能，封装为一套输入输出协议，通过 ioctl 统一提供对外接口
+    //通常由系统内置，或由用户自行安装的 资源
+    'driver',
+    //剪贴板，也封装为 chr 字符设备
+    'clip',
 ] as const
 //扩展 blk 块设备类型
 //!! 此类型文件节点需要先执行连接操作，连接成功后会被挂载到 dvMem.fs.mnt 目录下
@@ -393,6 +398,12 @@ export const dvFsInodeBlkTypes = [
     //!! 记录在 fnode._inode_.extra.cloudDrive 中
     //!! 可能还需要其他的网盘参数(账号密码等)，也需要一起记录在 fnode._inode_.extra 中
     'cloud_drive',
+    //将浏览器本地的 IndexedDb 挂载为 blk 类型节点
+    'idb',
+    //通过 File System Access API 挂载的本机文件系统，挂载为 blk 类型
+    'local',
+    //浏览器本地的 OPFS 挂载为 blk 类型
+    'opfs',
 ] as const
 //扩展 sock 套接字类型
 //!! 此类型的文件节点，默认挂载到 dvMem.fs.run 目录下
@@ -569,6 +580,8 @@ export type DvFsInodeCreateOptions = {
     auth?: DvFsInodeAuth
     //所有者
     owner?: DvFsInodeOwner
+    //reg+ext 类型，额外指定 mime 可以是标准 mime 或 *.ext 后缀名
+    mime?: string
 
     //可覆盖默认的 _inode_ 参数
     inode?: Partial<DvFsInodeMemStruct>
@@ -576,18 +589,29 @@ export type DvFsInodeCreateOptions = {
     [K: string]: any
 }
 
-//!! 默认的根目录结构
-export const dvFsDefaultRoots: { ipath: string; opt: DvFsInodeCreateOptions }[] = [
-    { ipath: '/sys', opt: {} },
-    { ipath: '/program', opt: {} },
-    { ipath: '/user', opt: {} },
-    { ipath: '/dev', opt: {} },
-    { ipath: '/mnt', opt: {} },
-    { ipath: '/run', opt: {} },
-    { ipath: '/sys/service', opt: {} },
-    { ipath: '/user/share', opt: {} },
-    { ipath: '/run/request', opt: {} },
-]
+//针对 reg 类型普通文件，定义 read|write 额外参数结构
+export interface DvFsRegInodeReadOptions {
+    //纯文本，可指定读取的内容长度
+    size?: number
+
+    //reg+ext 类型，内容为 json 对象，可以：
+    //指定要读取的 键名
+    keys?: string[]
+    //指定要返回 {} 对象，还是 json 字符串，默认返回对象
+    stringify?: boolean
+
+    [K: string]: any
+}
+export interface DvFsRegInodeWriteOptions {
+    //是否立即刷盘
+    immediate?: boolean
+
+    //reg+ext 类型，内容为 json 对象，可以：
+    //使用 dvExtend 合并，默认 false 直接覆盖
+    extend?: boolean
+
+    [K: string]: any
+}
 
 //可执行的 文件节点类型 DvProgramRegInode
 //!! program 应用程序启动后，会表现出部分 Linux 系统中的 process 进程的特征行为：
@@ -608,24 +632,39 @@ export const dvFsDefaultRoots: { ipath: string; opt: DvFsInodeCreateOptions }[] 
 //  构体的组件，将这些组件识别为 program 类型的文件节点，自动生成 _ipath_ 和 _inode_
 //  然后会挂载到 dvMem.fs.program 目录下
 //定义 programMeta 参数结构
+type _progAcType = 'user' | 'sys' | 'kernel'
 export interface DvFsProgramMeta {
     //元数据
     name: string //应用名称，DvExplorer
     title: string //应用标题，资源管理器，将作为 _inode_.name
     desc?: string
     //!! service 标记，默认 false
-    //!! service 是特殊的 program ，全局单例，内核启动后会自动启动(早于账号登录)
-    //!! service 的文件节点会挂载到 dvMem.fs.sys.service 目录下
-    //!! 作为 service 的 Vue 组件在定义时必须引入对应的 hook
+    //!! service 是特殊的 program ，全局单例，文件节点会挂载到 dvMem.fs.sys.service 目录下
     isService?: boolean
+    //service 额外参数
+    service?: {
+        //是否需要保持运行，默认 false
+        //!! 如果是 kernel 内核服务，此处默认 true
+        keepAlive: boolean
+
+        //!! 下面这些参数在 service 被收集时自动生成，手动指定无效
+        //service 类型，默认 user
+        type: _progAcType
+    }
     //标记区分是 Deskvue 自带的还是外部业务库带入的 program
     //默认不指定，自动根据扫描操作来推断
     isSysProgram?: boolean
+    //是否自启动，默认 false
+    isAutoStart?: boolean
     //!! 应用是否支持多实例，默认 true
     //!! service 类型此属性无效
     isMultiple?: boolean
     //!! 定义此应用可以打开的文件的 mime|*.ext
     mimes: string[]
+    //此 程序|服务 必须依赖的其他 服务
+    //!! 只有 服务程序 才可以被依赖
+    //!! 可指定 服务名称(组件名称) 或 完整 ipath
+    dependency?: string[]
     //GUI 显示参数
     gui?: {
         //程序图标
@@ -665,6 +704,10 @@ export interface DvFsProgramRegInodeIcache extends DvFsInodeIcache {
     meta?: DvFsProgramMeta
     program?: Record<string, DvFsPidCache>
 }
+//程序文件节点 数据类型
+export interface DvFsMemProgramStruct extends DvFsMemStruct {
+    _icache_: DvFsProgramRegInodeIcache
+}
 
 //内存中的 所有运行中的 program 程序信息结构
 //由 任务管理器(DvTaskService) 和 窗口管理器(DvWinService) 渲染为看到的 窗口界面
@@ -681,4 +724,49 @@ export interface DvFsPidItem {
     props?: PlainObject
 
     [K: string]: any
+}
+
+//program 程序节点的 复合类型
+export type DvFsProgramType = `${'kernel' | 'sys' | 'user'}-${'service' | 'program'}`
+
+//用户的 profile
+export interface DvFsUserProfile {
+    uuid: Uuid
+    name: string
+
+    auths?: string[]
+    roles?: string[]
+
+    [K: string]: any
+}
+
+//iso 项目隔离 项目参数
+export interface DvFsIsoInfo {
+    //项目隔离标识  ms.qypms 形式
+    iso: string
+    //项目名称
+    name: string
+    //项目的 baseUrl
+    baseUrl: string
+    //项目 logo
+    logo?: string
+
+    [K: string]: any
+}
+
+//用户登录后的 session 会话文件 _icache_ 内容结构
+export interface DvFsSessionIcache extends DvFsInodeIcache {
+    //登录用户的 信息
+    uuid: Uuid
+    //uSign 用户标识 iso:uuid 形式
+    uSign: DvFsUsign
+    //用户 profile
+    profile: DvFsUserProfile
+    //项目隔离项目参数
+    iso: DvFsIsoInfo
+}
+
+//会话文件节点 数据类型
+export interface DvFsMemSessionStruct extends DvFsMemStruct {
+    _icache_: DvFsSessionIcache
 }

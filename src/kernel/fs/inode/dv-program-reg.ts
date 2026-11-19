@@ -80,6 +80,7 @@ import {
     type DvFsPidCache,
     type DvFsProgramMeta,
     type DvFsProgramRegInodeIcache,
+    type DvFsProgramType,
 } from '../types'
 import { DvKernelError } from '../../error'
 import { useDvFsIpath, useDvFsAc, type DvFsAcHook, type DvFsAcFn } from '../utils'
@@ -87,10 +88,11 @@ import { dvIs, dvExtend } from '@utils/core'
 
 //program 程序运行状态
 export interface DvProgramStatus {
-    pid: string
     ipath: string
     name: string
+    type: DvFsProgramType
     running: boolean
+    pid: string
     //未指定 pid 时，返回整体运行状态：运行中的实例数量
     count?: number
     //指定 pid 时，返回单个实例的 cache | memory
@@ -119,8 +121,20 @@ export class DvProgramRegInode extends DvRegInode {
 
     //快速判断程序是否已启动
     isRunning(): boolean {
-        const icache = this.getCache()
-        return !!icache && icache.program && dvIs.nemobj(icache.program)
+        return useDvMemStore().programRunning(this.ipath)
+    }
+
+    //快速判断程序复合类型
+    //!! 不是程序节点的 返回 false
+    getType(): DvFsProgramType | false {
+        const type = useDvMemStore().programType(this.ipath)
+        if (!type) return false
+        return type
+    }
+    typeIs(type: DvFsProgramType): boolean {
+        const tp = this.getType()
+        if (tp === false) return false
+        return type === tp
     }
 
     //读取 program cache，响应式
@@ -142,7 +156,7 @@ export class DvProgramRegInode extends DvRegInode {
         if (pids.length <= 0 || !pids[0]) return undefined
         if (!pid || !dvIs.nemstr(pid)) {
             pid = this._getPidFromCallCtx(callCtx)
-            if (!pid) pid = pids[0]
+            if (!pid || !pids.includes(pid)) pid = pids[0]
         }
         return new DvProcess(this, pid)
     }
@@ -214,15 +228,18 @@ export class DvProgramRegInode extends DvRegInode {
         //meta
         const meta = this.getMeta()
         if (!meta) return undefined
+        //type
+        const type = this.getType()
+        if (type === false) return undefined
         //pids
         let pids = this.getPids()
-        const running = pids.length > 0
         //输出
         const rtn: DvProgramStatus = {
-            pid: pid ?? '',
             ipath: this.ipath,
             name: meta.name,
-            running,
+            type,
+            running: pids.length > 0,
+            pid: pid ?? '',
             count: pids.length,
         }
 
@@ -383,8 +400,20 @@ export class DvProcess {
         return true
     }
 
+    //释放进程持有的 某个文件节点
+    async releaseOpen(ipath?: string, callCtx?: DvFsCallContext): Promise<boolean> {
+        const cache = this.getCache()
+        if (!cache) return false
+        const opens = cache.opens ?? []
+        if (!ipath || !dvIs.nemstr(ipath) || !opens.includes(ipath)) return false
+        const handler = useDvInodeHandler(ipath, callCtx)?.handler
+        await handler?.release?.(callCtx)
+        opens.splice(opens.indexOf(ipath), 1)
+        return true
+    }
+
     //释放进程持有的 全部文件节点引用（停止进程前调用）
-    async releaseOpens(callCtx?: DvFsCallContext): Promise<boolean> {
+    async releaseAllOpens(callCtx?: DvFsCallContext): Promise<boolean> {
         const cache = this.getCache()
         if (!cache) return false
         const opens = cache.opens ?? []
@@ -392,13 +421,14 @@ export class DvProcess {
             const handler = useDvInodeHandler(ipath, callCtx)?.handler
             handler?.release?.(callCtx)
         }
-        cache.opens = []
+        //cache.opens = []
+        opens.splice(0)
         return true
     }
 
     //停止进程
     async kill(callCtx?: DvFsCallContext): Promise<boolean> {
-        const release = await this.releaseOpens(callCtx)
+        const release = await this.releaseAllOpens(callCtx)
         const stop = await useDvMemStore().setMemOnProgramStop(this.pid)
         return release && stop
     }

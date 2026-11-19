@@ -128,7 +128,7 @@ export const useDvFsAc = (fnSetter?: DvFsInodeAcFnSetter) => {
         if (stage.stageAfter('fs-ready', true)) return true
         //!! DvOs mount 在 fs-ready 之前，此时需要调用 /sys/prog0 程序创建基础 fs 目录结构
         //!! 因此需要额外开启权限通道
-        if (stage.stageBefore('fs-ready') && stage.stageIs('os-mounting')) return true
+        if (stage.stageBetween('fs-initing', 'os-mounting', true)) return true
         return false
     }
 
@@ -183,7 +183,7 @@ export const useDvFsAc = (fnSetter?: DvFsInodeAcFnSetter) => {
         //检查 owner
         const owner = inode._inode_.owner
         //owner === root 普通用户无任何权限
-        if (owner === 'root') return false
+        //if (owner === 'root') return false
         //owner === caller 用户访问自己的文件节点，拥有所有权限
         if (owner === caller) return true
 
@@ -191,6 +191,11 @@ export const useDvFsAc = (fnSetter?: DvFsInodeAcFnSetter) => {
         const opk = opKey(inode, op)
         const acf = acfns?.[opk]
         if (!acf) return false
+
+        //!! 修订 owner === root 权限处理方式
+        if (owner === 'root') {
+            return _userAuthToRootInode(acf, inode)
+        }
 
         //文件现有 auth
         let auth: DvFsInodeAuth
@@ -204,6 +209,60 @@ export const useDvFsAc = (fnSetter?: DvFsInodeAcFnSetter) => {
         }
 
         return acf(auth)
+    }
+
+    //!! 普通用户 对于 归属于 root 的文件节点的 权限控制方法
+    //!! 根据节点类型，有所区别
+    const _userAuthToRootInode = (acf: DvFsAcFn, inode: DvFsMemStruct): boolean => {
+        const ind = inode._inode_
+        //根据 节点类型 分别处理
+        switch (ind.mode) {
+            //dir|lnk|chr|blk
+            //普通用户 允许 rx (如果节点本身允许的话)
+            //普通用户一律不允许 w
+            case 'dir':
+            case 'lnk':
+            case 'chr':
+            case 'blk':
+                //如果目录本身允许 x
+                if (x(ind.auth)) {
+                    //如果目录本身允许 r 则权限位 = 101 rx
+                    if (r(ind.auth)) return acf(101)
+                    //否则仅允许 x
+                    return acf(1)
+                }
+                //本身不允许 x
+                return false
+                break
+
+            //reg
+            case 'reg':
+                //如果节点本身允许 r
+                if (r(ind.auth)) {
+                    //reg+ext|mime 类型，只允许 r
+                    if (['', 'ext', 'mime'].includes(ind?.extra?.type ?? '')) {
+                        return acf(100)
+                    }
+                    //reg+model 类型，允许 rx
+                    if (ind?.extra?.type === 'model') {
+                        if (x(ind.auth)) return acf(101)
+                        return acf(100)
+                    }
+                }
+                //如果本身不允许 r 或不是可用类型
+                return false
+                break
+
+            //sock
+            //此类型节点通常是 request 请求记录，只允许读
+            case 'sock':
+                //如果节点本身允许 r
+                if (r(ind.auth)) return acf(100)
+                return false
+                break
+        }
+
+        return false
     }
 
     return {

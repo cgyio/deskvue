@@ -3,42 +3,191 @@
  * 基于 pinia 模拟 Linux 系统中的 磁盘行为
  *
  * 内存文件树，持久化保存的行为：
- *  0   针对 /sys 路径下的系统文件，只有下列文件会被持久化保存：
- *      dvHdd.fs.[/sys/config]      原始的系统参数 *.conf
- *          这些是原始的系统设置，只有在执行 update 更新操作后可能会被修改
- *      dvHdd.fs.[/sys/update]      系统更新数据 *.upd
- *          每次启动后，会自动从后台拉取 hash 检查更新
- *          如果需要，拉取更新数据，保存到这里，同时合并修改 dvHdd.fs.[/sys/config] 文件内容
- *              用户自定义的设置，也会在此时被同步合并处理
- *      dvHdd.fs.[/mnt/db_foo]      数据库 mnt+db 类型，保存数据库 schema
- *      dvHdd.fs.[/mnt/db_foo/bar]  数据模型 reg+model 类型，保存数据模型 schema
- *          数据库和数据模型的 schema 与用户无关，且不需要每次都从后台拉取，因此可以被持久化
- *          数据库 schema 中会保存时间戳，每次启动后比对时间戳，expire 后重新拉取
- *              拉取后，同时修改这些文件内容
- *              用户针对数据库、数据模型的个性化配置，也会在拉去后同步合并处理
- *      !! 其他系统文件会在启动时自动创建，只存在于内存树中，不会被持久化到 dvHdd
- *
- * 1    用户登录后，用户文件的持久化行为：
- *      dvHdd.fs.[iso:uuid]                     保存当前登录用户的所有数据
- *      dvHdd.fs.[iso:uuid].user                完整保存内存树中的 /user 目录
- *          目录结构完全一致，例如：
- *          dvHdd.fs.[iso:uuid].user.share  -->  dvMem.fs.user.share
- *          inode 节点数据结构 DvFsHddStruct，与内存数据结构 DvFsMemStruct 细微区别：
- *              inode._icache_ 不会持久化
- *              inode._content_ 只存在于 dvHdd 中，根据文件类型不同，保存不同的内容数据
- *                  reg 不指定 mime 和 后缀名的，保存纯文本内容
- *                  reg+mime 保存指向的实际文件 url，mime 文件只能保存在云端或本机文件中
- *                  reg+ext 是 Deskvue 系统的自有文件类型，以 json 对象形式保存在 _content_
- *
- *      dvHdd.fs.[iso:uuid].[/sys/config]       保存用户个性化的 系统设置
- *      dvHdd.fs.[iso:uuid].[/mnt/db_foo]       保存用户个性化的数据库 schema
- *      dvHdd.fs.[iso:uuid].[/mnt/db_foo/bar]   保存用户个性化的数据模型 schema
- *
- *      dvHdd.fs.[iso:uuid].program             保存用户自行安装的外部 program 程序组件
- *          inode._content_ = {
- *              component: 异步 Vue 组件的 *.vue 文件 url
- *              define?: 会缓存 Vue 组件的定义结构
+ *  0   内存树中的文件节点数据结构 DvFsMemStruct 与 磁盘中的文件节点数据结构 DvFsHddStruct 的细微区别：
+ *          两者都有的结构：{
+ *              _ipath_: '/foo/bar/jaz',    节点绝对路径，全局唯一的寻址依据，一定以 / 开头
+ *              _inode_: {                  节点元数据
+ *                  mode: 'reg',            节点基础类型，reg,dir,lnk,chr,blk,sock
+ *                  auth: 111,              节点 rwx 权限位
+ *                  owner: 'user',          节点归属者，root | user | iso:uuid
+ *                  name: '显示名称',        此节点的显示名称，仅显示，不参与寻址
+ *                  time: {a,c,m,d},        节点时间戳，毫秒
+ *                  extra?: {               节点额外参数
+ *                      type?: 'program',   节点的扩展类型
+ *                      mime?: '*.conf',    如果是 reg+ext 类型的节点，需要指定此节点的实际后缀名
+ *                      !! 根据节点类型的不同，会有不同的数据结构保存在这里，例如：program 程序节点，这里需要保存 component
+ *                  }
+ *              },
  *          }
+ *          内存节点数据特有结构 DvFsMemStruct：{
+ *              _inode_: {
+ *                  modi: 1,        节点脏标记，需要刷盘的标记为 1
+ *                  lock: 0,        节点锁定标记，有程序打开此文件节点并持有的，标记为 1
+ *                  open: [],       此节点被哪些其他节点打开并持有，记录这些其他节点的 ipath
+ *              },
+ *              _icache_: {         内存文件节点的运行时缓存
+ *                  handler: null,  文件节点句柄实例缓存，所有已打开的节点共享句柄实例
+ *                  content?: any,  某些类型文件节点的内容需要被缓存在这里
+ *                                  !! 如果节点文件内容被修改，修改后的文件内容也保存在这里
+ *                  !! 根据节点类型不同，会有不同的运行时缓存数据，例如：program 程序节点，这里要保存 meta{} | program{pid}
+ *              }
+ *          }
+ *          磁盘节点数据特有结构 DvFsHddStruct：{
+ *              !! 磁盘数据必须包含 _content_ 他是实际保存的文件节点的 内容载体
+ *              !! 刷盘时，最终修改后文件数据会被填到这里
+ *              _content_: {
+ *                  !! 根据节点类型的不同，会有不同的 _content_ 结构，例如：
+ *                  reg 普通文件，如果不指定扩展类型，则这里是 纯字符串内容
+ *                  program 程序节点，这里是:
+ *                      component: 'DvExplorer'
+ *              }
+ *          }
+ *
+ *  1   针对 dvMem.fs.sys|program|dev|mnt.. 这些系统目录下的文件节点，在磁盘中持久化方法：
+ *
+ *      1.0 分层存储，区分用户无关的全局数据，和用户自定义的数据
+ *          需要分层存储的系统文件通常有：
+ *              dvMem.fs.sys.config         系统设置，reg+ext 类型，*.conf 后缀名，分别存储在：
+ *                  dvHdd.fs.sys.config
+ *                  dvHdd.userFs.[iso:uuid].config
+ *                      _content_ = { ... 系统设置内容 ... }
+ *              dvMem.fs.mnt.db.foo         数据库配置 schema 数据，blk+db 类型
+ *              dvMem.fs.mnt.db.foo.bar     数据模型配置 schema 数据，reg+model 类型，分别存储在：
+ *                  dvHdd.fs.mnt.db.foo
+ *                  dvHdd.fs.mnt.db.foo.bar
+ *                  dvHdd.userFs.[iso:uuid].db.foo
+ *                  dvHdd.userFs.[iso:uuid].db.foo.bar
+ *                      _content_ = {
+ *                          schema: { ... 数据库 schema ... },
+ *                          expireAt: 过期时间戳，秒,
+ *                          bar: { ... 数据模型的 schema ... }
+ *                      }
+ *
+ *          !! 这些文件节点，在 FS 内存树构建时，需要分步创建内存节点：
+ *              os-mounting 阶段：
+ *                  内存树中创建 /*** 根目录，然后从 dvHdd 中读取对应的根目录中的数据，转换为内存节点数据并挂载
+ *              user-initing 阶段：
+ *                  从 dvHdd.userFs.[iso:uuid] 用户数据下读取对应的根目录中的数据，覆盖合并到对应内存节点数据中
+ *
+ *      1.1 只保存用户无关的文件数据
+ *          这些文件通常有：
+ *              dvMem.fs.sys.update             系统更新数据，reg+ext 类型，*.upd 后缀名，保存在：
+ *                  dvHdd.fs.sys.update
+ *                      _content_ = {
+ *                          update: { ... 系统更新包数据 ... },
+ *                          hash: 'md5(...)',
+ *                          remote: { ... 远程配置数据，用户 功能启停、灰度发布测试 等 ... },
+ *                          remoteHash: 'md5(...)',
+ *                      }
+ *              dvMem.fs.dev.usb.foo            全局启用的 WebUSB 已经连接过的设备，chr+usb 类型，保存在：
+ *                  dvHdd.fs.dev.usb.foo
+ *                      _content_ = {
+ *                          type: 'web_printer',            设备类型，可用于路由到专门的操作类
+ *                          filter: {                       用来匹配，就是传给 requestDevice 的 filter
+ *                              vendorId?: number,
+ *                              productId?: number,
+ *                              classCode?: number,
+ *                              subclassCode?: number,
+ *                              protocolCode?: number,
+ *                          },
+ *                          serialNumber?: 'string',        精确匹配设备
+ *                          createdAt: 记录创建时间,
+ *                          lastConnected: 上次是否成功打开，UI 标记
+ *                      }
+ *              dvMem.fs.dev.driver.GlobalDriver    全局可用的定制驱动，chr+driver 类型，保存在：
+ *                  dvHdd.fs.dev.driver.GlobalDriver
+ *                      _content_ = {
+ *                          driver: 'GlobalDriver',     可以通过 useDvDriver('GlobalDriver') 定位到具体类的 键名
+ *                          ioctls: { ... 缓存 接口方法注册表 ... }
+ *                      }
+ *              dvMem.fs.mnt.idb.foo            全局启用的 IndexedDb 数据库，blk+idb 类型，保存在：
+ *                  dvHdd.fs.mnt.idb.foo
+ *                      _content_ = {
+ *                          store: '连接到哪个库',
+ *                          version: '版本号',
+ *                          ...
+ *                      }
+ *              dvMem.fs.mnt.local.local_dir    全局可用的 File System Access API（本地文件），保存在：
+ *                  dvHdd.fs.mnt.local.local_dir
+ *                      _content_ = {
+ *                          !! localStorage 无法序列化一个 本地文件夹的 handler 句柄实例
+ *                          !! 此功能暂时无法实现
+ *                      }
+ *      1.2 保存用户相关的文件数据
+ *          这些文件通常有：
+ *              dvMem.fs.program.MyProgram      用户自行安装的 program 程序，reg+program 类型，保存在：
+ *                  dvHdd.userFs.[iso:uuid].program.MyProgram
+ *                      _content_ = {
+ *                          component: 'MyProgram',     可以通过 useDvProgram('MyProgram') 定位到 Vue 组件定义
+ *                          define?: { ... 缓存 vue 组件定义，包含 programMeta{} 数据 ... }
+ *                      }
+ *              dvMem.fs.dev.driver.MyDriver    与 1.1 结构一致，只是保存在用户空间，只能由当前用户调用
+ *                  dvHdd.userFs.[iso:uuid].dev.driver.MyDriver
+ *              dvMem.fs.mnt.idb.my_idb         与 1.1 结构一致，只是保存在用户空间，只能由当前用户调用
+ *                  dvHdd.userFs.[iso:uuid].mnt.idb.my_idb
+ *
+ *      !! config 全局配置 与 update 系统更新流程：
+ *          os-mounting 阶段：从 dvHdd.fs.sys.config|update 读取全局配置，转换为内存节点数据，挂载到对应目录
+ *          service-ready 阶段：由 DvUpdateService 服务启动，会拉取一次后台的 系统更新 hash
+ *              经过比对确认需要执行系统更新，拉取更新数据后，通过 FS write 流程：
+ *                  写入 dvMem.fs.sys.config|update._icache_.content
+ *                  打脏标记
+ *                  在刷盘时写回 dvHdd
+ *          user-initing 阶段：从 dvHdd.userFs.[iso:uuid].config 读取用户个性化配置，合并覆盖到：
+ *              dvMem.fs.sys.config._icache_.content
+ *              !! 不打脏标记，不会被写回 dvHdd.fs.sys.config
+ *          ready 之后：用户通过 DvSettings 程序修改系统配置，会：
+ *              直接修改 dvHdd.userFs.[iso:uuid].config._content_ 不经刷盘逻辑
+ *              同时会将修改后的系统配置，合并覆盖到 dvMem.fs.sys.config._icache_.content
+ *          系统运行过程中，任意程序内读取系统配置，直接读取 dvMem.fs.sys.config._icache_.content
+ *
+ *      !! /mnt/db 目录下的 数据库|数据模型 节点
+ *          os-mounting 阶段：从 dvHdd.fs.mnt.db 路径下读取数据库节点，转换为内存节点数据，挂载到对应目录
+ *          ready 之后：用户打开 DvDbManager 程序后，指向某个数据库，会先检查 schema 数据的过期状态
+ *              确认需要重新拉取 schema 数据后，后台拉去数据，走 FS write 流程：
+ *                  修改 dvMem.fs.mnt.db.foo._icache_.content
+ *                  打脏标记
+ *                  刷盘时写回 dvHdd.fs.mnt.db.foo
+ *              不需要重新拉取，则读取 dvHdd.userFs.[iso:uuid].db.foo 数据，合并覆盖到：
+ *                  dvMem.fs.mnt.db.foo._icache_.content
+ *                  !! 不打脏标记，不会写回
+ *              用户在 DvDbManager 程序内个性化配置数据库数据模型的 schema 则会：
+ *                  直接写 dvHdd.userFs.[iso:uuid].db.foo._content_ 不经刷盘逻辑
+ *          系统运行过程中，任意程序内读取数据库|数据模型 schema，直接读取 dvMem.fs.mnt.db.foo._icache_.content
+ *
+ *      !! /program | /sys/service 目录下的 program 程序节点：
+ *          os-mounting 阶段：将 app.config.globalProperties.$programs 下的 全局|业务 程序|服务 挂载到对应目录下
+ *          user-initing 阶段：读取 dvHdd.userFs.[iso:uuid].program 目录下的用户自行安装的程序，转换为内存节点数据，挂载到
+ *          /program 目录下
+ *          ready 之后：用户自行安装的程序，与内置程序使用相同的 启动|停止|多进程 机制
+ *
+ *      !! /dev 目录下的资源挂载流程：
+ *          os-mounting 阶段：从 dvHdd.fs.dev 读取全局资源，转换为内存节点数据，挂载到对应目录
+ *          user-initing 阶段：从 dvHdd.userFs.[iso:uuid].dev 读取用户自有资源，转换为内存节点数据，挂载到对应目录
+ *          ready 之后：由 DvDeviceService 服务 弹窗提示用户重新连接设备，用户点击确认，重新获取资源句柄，操作各节点 icache：
+ *              _icache_ = {
+ *                  handler: null,      文件节点句柄实例
+ *                  content: {
+ *                      ... 磁盘中的 _content_ 数据
+ *                  },
+ *                  connected: true
+ *              }
+ *          之后在任意程序中：
+ *              const webCam = await sysCall('dev:open', '/dev/usb/web_cam')
+ *              webCam.anyApi(...)
+ *              const driver = await sysCall('dev:open', '/dev/driver/MyDriver')
+ *              driver.ioctl('api', ...args)
+ *
+ *
+ *  2   dvMem.fs.user 用户文件夹
+ *          保存在：dvHdd.userFs.[iso:uuid].user，目录结构完全一致，例如：
+ *              dvHdd.userFs.[iso:uuid].user.share  -->  dvMem.fs.user.share
+ *          文件内容的保存形式，见下方注释：“dvHdd 磁盘中 文件节点的 _content_ 保存数据结构”
+ *          文件内容的读取方式使用默认的 addr 寻址方法：
+ *              const cnt = dvHdd.addr('ipath')
+ *              !! 会自动补齐 用户的 uSign (iso:uuid)
+ *          文件内容的 读取|写入 方法遵循通用的 FS 文件系统 read|write 流程
+ *
  *
  * dvHdd 磁盘中 文件节点的 _content_ 保存数据结构：
  * !! 根据 mode+type 决定 _content_ 里保存什么数据
@@ -59,39 +208,6 @@
  *          !!      此文件句柄实例内部不再是写 dvHdd，而是调用对应接口，将文件内容上传至云端，或写回 OPFS
  *          !!      dvHdd 中此文件节点的 _content_ 不会改变
  *
- *      mnt+db, reg+model   数据库|数据模型 schema 数据，内容是 json 对象
- *          这类文件以 json对象 形式直接保存在 对应的 ipath 完整路径键名下，不是普通的 DvFsHddStruct 结构
- *          程序读取 schema 数据时，走专用的 getDbSchema 通道，
- *          程序修改 schema 数据时，单独保存在 用户 usign 键名下
- *
- *      /sys/config     系统设置数据，reg+ext 类型
- *      /sys/update     系统更新数据，reg+ext 类型
- *          这类文件以 json对象 形式直接保存在 _content_ 中
- *          程序读取时走专门的 sysConfig 通道
- *          程序修改时，修改后的数据单独保存在 用户 usign 键名下
- *
- *      /program/*      仅在用户自行安装外部程序时，会涉及 dvHdd 写入，结构自动生成
- *          用户如果卸载这些程序，则会自动清理 dvHdd，不需要手动处理
- *          在内核启动时，这些程序会作为普通的 program 节点挂载到 内存树 dvMem.fs.program 下
- *          与内置程序有相同的行为
- *
- *      lnk             符号链接
- *          这类文件的 _content_ 中只保存 连接到的 其他节点的 ipath
- *          文件句柄的所有相应方法，只通过 ipath 透传到目标节点上
- *
- *      chr+driver      自定义驱动
- *          这类文件需要被持久化到用户 usign 键名下 dvHdd.fs.[iso:uuid].[/dev/my_driver]
- *          本质上，这类文件是为了实现一组关联的功能而定义的一套输入输出协议：
- *              handler = sysCall('fs:open', '/dev/my_driver')
- *              handler.ioctl('method', ...args)
- *          _content_ = {
- *              driver: 'url/to/some_driver.ts',
- *              methods: {
- *                  ...方法注册表
- *              }
- *          }
- *
- *      /dev /run 这些都是运行时数据，不涉及持久化
  *
  *
  *
@@ -99,275 +215,408 @@
 
 import { ref, reactive, readonly, computed } from 'vue'
 import { defineStore, storeToRefs } from 'pinia'
+import { dvTriggerKernelError } from '../../error'
 import {
     type DvFsHddStruct,
+    type DvFsMemStruct,
     type DvFsInodeHddStruct,
     type DvFsInodeMemStruct,
-    type DvFsMemStruct,
+    type DvFsInodeCreateOptions,
     dvFsEmptyInodeTime,
+    type DvFsSessionIcache,
 } from '../types'
-import { useDvFsIpath } from '../utils'
+import { useDvFsIpath, useDvFsCreate, useDvFsCallCtx, useDvFsConver } from '../utils'
+import { dvConfig } from '../../config'
 import { useDvMemStore } from './dv-mem'
-import { dvIs, dvExtend, dvCopy, dvLoget, dvTrimAny } from '@utils/core'
+import { dvIs, dvWait, dvExtend, dvCopy, dvLoget, dvTrimAny } from '@utils/core'
 
 //ipath 工具
 const ipu = useDvFsIpath()
 //获取 uSign
-const uSign = (): string | undefined => useDvMemStore().addrSession()?._icache_?.uSign
+const { uSign } = useDvFsCallCtx()
+//磁盘节点数据 与 内存节点数据 转换方法
+const { toMemStruct, toHddStruct } = useDvFsConver()
+
+//快速构建 文件节点 工具
+const { inode, dnode, fnode, pnode, sysDir, sysFile } = useDvFsCreate<'hdd'>('hdd')
 
 export const useDvHddStore = defineStore(
     'dvHdd',
     () => {
         //模拟 Linux 系统的 FS 文件系统行为
-        //!! 持久化的(保存到磁盘的)文件系统
-        const fs = reactive<Record<string, DvFsHddStruct>>({
-            //!! 系统设置，全局基础设置
-            '/sys/config': {
-                _ipath_: '/sys/config',
-                _inode_: {
-                    mode: 'reg',
-                    auth: 101,
-                    owner: 'root',
-                    time: { ...dvFsEmptyInodeTime },
-                    name: 'config',
-                    extra: {
-                        type: 'ext',
-                        mime: '*.conf',
-                    },
-                },
-                _content_: {
-                    //!! 此处保存 Deskvue 系统的全局设置
-                    version: '0.0.1',
-                    service: {
-                        cli: {
-                            fsize: 14,
-                            tabw: 4,
+        //!! 定义 持久化(保存到磁盘 dvHdd)的文件系统
+        //!! 在 fs-initing 阶段，会将此处保存的文件系统结构，整体搬到内存树 dvMem.fs
+        //!! 在用户登录后 user-initing 阶段，会读取用户空间的目录结构，整体搬到 dvMem.fs.user
+        //!!    同时还会读取用户自有的 程序|驱动|mnt节点 等资源，分别挂载到内存树中的对应节点
+        const fs = reactive<DvFsHddStruct>(
+            sysDir(
+                '',
+                {},
+                {
+                    //sys 目录
+                    sys: sysDir(
+                        'sys',
+                        {},
+                        {
+                            //sys/prog0 系统根程序(0 号进程)
+                            prog0: pnode('sys/prog0', 'DvOs', {
+                                auth: 101,
+                                owner: 'root',
+                            }),
+                            //sys/config 系统设置 *.conf
+                            //!! 系统的原始设置，用户的个性化配置保存在用户空间，不会修改这里
+                            //!! 仅在 update 系统更新时，会修改此处的数据
+                            //!! 系统运行期间读取的 系统配置 是 合并了 原始配置 和 用户配置之后的最终数据
+                            config: sysFile('sys/config', { mime: '*.conf' }, dvConfig),
+                            //sys/update 系统更新 *.upd
+                            //!! 每次系统启动后，会通过 update 服务检查更新，如果需要更新，会拉区更新数据，保存到这里
+                            //!! 执行系统更新时，可能会修改 config 系统原始配置
+                            update: sysFile(
+                                'sys/update',
+                                { mime: '*.upd' },
+                                {
+                                    //!! 后台拉取的更新包数据
+                                    update: {},
+                                    hash: '',
+                                    //!! 后台拉取的远程配置，用于 远程启停功能，灰度测试 等
+                                    remote: {},
+                                    remoteHash: '',
+                                },
+                            ),
+                            //sys/session 当前会话状态数据
+                            //!! 用户登录之前，此文件保存的是上一次登录用户的信息
+                            //用户登录之后，使用当前登录用户的信息修改此文件内容
+                            session: sysFile(
+                                'sys/session',
+                                { mime: '*.session' },
+                                {
+                                    //DvFsSession
+                                },
+                            ),
+                            //sys/buffer 命令行的 输出缓冲区节点
+                            //用于承载 命令行的输入输出 内容，保存在 _icache_.buffer 中
+                            //!! 没有 _icache_.content 因此不会被持久化
+                            buffer: sysFile('sys/buffer', { mime: '*.buffer' }, ''),
+                            //sys/service 系统服务程序挂载点
+                            //!! os-mounting 阶段扫描并挂载 系统服务程序节点
+                            //!! user-initing 阶段扫描并挂载 业务服务程序节点
+                            service: sysDir(
+                                'sys/service',
+                                {},
+                                {
+                                    //专门挂载 内核服务的 目录
+                                    kernel: sysDir('sys/service/kernel'),
+                                },
+                            ),
                         },
-                        gui: {
-                            dvLogo: 'https://ms.systech.work/src/icon/deskvue-logo${expand}${dark}.svg',
-                            wallpaper: 'https://qypms.systech.work/wallpaper/dvwp_${dark}.webp',
-                            //defaultWallpapers: '',
-                            desktopGridSize: 'medium',
-                            desktopGridGutter: 16,
-                            desktopPadding: 16,
-                            taskbarPosition: 'bottom',
-                            taskbarSize: 64,
-                        },
-                        win: {
-                            windowTightness: 'compact',
-                        },
-                    },
-                },
-            },
+                    ),
+                    //program 程序目录，系统|用户 程序挂载点
+                    //!! 仅向内存树输出目录节点，内部子节点不会持久化，仅存在于内存树中
+                    //!! os-mounting 阶段扫描并挂载 系统程序节点
+                    //!! user-initing 阶段扫描并挂载 用户程序节点
+                    program: sysDir('program'),
+                    //user 用户目录，所有用户文件挂载点
+                    //!! fs-initing 阶段 会将此处定义的固定节点结构，转换挂载到内存节点 dvMem.fs.user
+                    //!! user-initing 阶段，会读取用户空间的完整目录结构，转换挂载到内存节点 dvMem.fs.user
+                    //!! 用户数据中保存的 系统个性化参数、数据库个性化参数 会一起被搬到内存树
+                    //!! 运行时读取 系统设置、数据库设置 会 合并 原始参数和个性化参数，输出合并后的最终数据
+                    user: sysDir(
+                        'user',
+                        {},
+                        {
+                            //!! 固定的节点，这些节点属于系统节点，用户无法自行修改
+                            //user/share 全局用户共享目录
+                            share: sysDir('user/share', { inode: { name: '共享' } }),
+                            //为每个用户创建指向 dev|mnt 的软连接
+                            dev: sysFile(
+                                'user/dev',
+                                { mode: 'lnk', inode: { name: '设备' } },
+                                '/dev',
+                            ),
+                            mnt: sysFile(
+                                'user/mnt',
+                                { mode: 'lnk', inode: { name: '位置' } },
+                                '/mnt',
+                            ),
 
-            //!! 系统更新
-            '/sys/update': {
-                _ipath_: '/sys/update',
-                _inode_: {
-                    mode: 'reg',
-                    auth: 101,
-                    owner: 'root',
-                    time: { ...dvFsEmptyInodeTime },
-                    name: 'config',
-                    extra: {
-                        type: 'ext',
-                        mime: '*.upd',
-                    },
+                            //!! 登录后，用户空间的完整目录结构会挂载到内存树中的这里
+                            //config,program,driver,db ...
+                        },
+                    ),
+                    //dev 设备目录，chr 类型文件节点挂载点
+                    dev: sysDir(
+                        'dev',
+                        {},
+                        {
+                            //dev/usb WebUSB 设备挂载目录
+                            //!! 持久化的 usb 节点只保存已经连接过的设备序列号，重启后需要弹出设备列表，由用户选择后重新连接
+                            //!! 重连后的设备句柄，保存在内存树中，例如：dvMem.dev.usb.[GP-printer]._icache_.devHandler
+                            usb: sysDir('dev/usb'),
+                            //dev/driver 系统|用户 驱动类资源挂载目录
+                            //!! 此处保存的是全局可用 系统驱动，在 os-mounting 阶段会自动挂载到内存树 dvMem.dev.driver
+                            //!! 用户自有的驱动保存在用户空间，在 user-initing 阶段会自动挂载到内存树
+                            driver: sysDir('dev/driver'),
+                            //dev/clip 剪贴板封装为字符设备节点
+                            //!! 仅存在于内存树 dvMem.fs.dev.clipboard 不会持久化
+                            //!! 剪贴板全局公用，不区分 用户
+                            //clipboard: fnode('dev/clipboard',{mode:'chr',type:'clip',inode:{name: '剪贴板'}}),
+                        },
+                    ),
+                    //mnt 可挂载资源，blk 类型节点挂载点
+                    mnt: sysDir(
+                        'mnt',
+                        {},
+                        {
+                            //mnt/db 后端 SPF-Orm 数据库资源挂载目录
+                            //!! 此处预定义的，以及通过数据库管理器程序手动连接过的 数据库 schema 数据都会持久化到这里
+                            //!! fs-initing 阶段会将此处保存的数据库配置，挂载到内存树
+                            //!! 系统运行时读取到的 数据库参数，是合并了 此处的原始参数 和 保存在用户目录下的个性化参数 后的最终数据
+                            db: sysDir('mnt/db'),
+                            //mnt/idb 浏览器本地 IndexedDb 数据库挂载目录
+                            idb: sysDir('mnt/idb'),
+                            //mnt/local 通过 File System Access API 挂载本机文件
+                            local: sysDir('mnt/local'),
+                            //mnt/opfs 浏览器本地的 OPFS 文件系统，可存大二进制文件
+                            opfs: sysDir(
+                                'mnt/opfs',
+                                {},
+                                {
+                                    //mnt/opfs/root 本地 OPFS 根节点，只能 root 访问
+                                    root: sysFile(
+                                        'mnt/opfs/root',
+                                        {
+                                            mode: 'blk',
+                                            type: 'opfs',
+                                        },
+                                        {
+                                            //保存 OPFS 访问路径
+                                            entryPath: '/dv',
+                                            //已格式化(初始化)
+                                            formatted: false,
+                                        },
+                                    ),
+                                    //mnt/opfs/share 本地 OPFS 的多用户共享节点
+                                    share: fnode(
+                                        'mnt/opfs/share',
+                                        {
+                                            mode: 'blk',
+                                            type: 'opfs',
+                                        },
+                                        { entryPath: '/dv/share', formatted: false },
+                                    ),
+                                    //登录用户自有的 OPFS 储存空间，挂在这里，登录后自动在内存树 dvMem.fs.mnt.opfs 下创建节点 user
+                                    //user: fnode('mnt/opfs/user', {mode: 'blk', type: 'opfs'}, {entryPath: '/dv/user/[iso:uuid]'}),
+                                },
+                            ),
+                        },
+                    ),
+                    //run 网络传输目录，sock 类型节点挂载点
+                    //!! 仅向内存树输出目录节点，内部子节点不会持久化，仅存在于内存树中
+                    run: sysDir(
+                        'run',
+                        {},
+                        {
+                            //run/request 全局请求 挂载为 sock+request 类型
+                            request: sysDir('run/request'),
+                        },
+                    ),
                 },
-                _content_: {
-                    //!! 后台拉取的更新包数据
-                    update: {
-                        _hash_: '',
-                        //...
-                    },
-                    //!! 后台拉取的远程配置，用于 远程启停功能，灰度测试 等
-                    remote: {
-                        _hash_: '',
-                        //...
-                    },
-                },
-            },
-
-            //!! 登录用户
-            //'iso:uuid': {
-            //    '/sys/config': {},
-            //    '/mnt/db_foo': {},
-            //    user: {}
-            //}
-        })
+            ),
+        )
         //只读
         //const _fs = readonly(fs)
 
         //磁盘寻址，返回的是 响应式数据
+        //!! 磁盘寻址一定传入 ipath，不支持使用 节点显示名称 寻址
         const addr = (ipath: string): DvFsHddStruct | undefined => {
             ipath = ipu.norm(ipath)
 
-            //!! 用户登录后优先从用户目录下查找
-            const usign = uSign()
-            if (usign && fs?.[usign] && dvIs.nemobj(fs[usign])) {
-                //先直接匹配
-                if (fs[usign][ipath]) return fs[usign][ipath]
-                //再 loget
-                const rtn = dvLoget(fs[usign], dvTrimAny(ipath, '/'))
-                if (rtn) return rtn
+            //传入 / 直接返回 fs
+            if (ipu.isBase(ipath)) return fs
+
+            //!! 访问用户目录下节点，一定以 /user/ 开头
+            if (ipath.startsWith('/user/') || ipath === '/user') {
+                //!! 用户必须登录
+                const usign = uSign()
+                if (!usign) return undefined
+                //优先在用户空间查找
+                if (userFs?.[usign] && dvIs.nemobj(userFs[usign])) {
+                    if (ipath === '/user') return userFs[usign]
+                    const rtn = dvLoget(userFs[usign], ipath.slice(6).split('/'))
+                    if (rtn !== undefined) return rtn
+                }
             }
 
             //!! 用户路径下不存在，再从顶层查找
-            //首先尝试直接键名
-            if (fs[ipath]) return fs[ipath]
-            //再尝试 loget
-            return dvLoget(fs, dvTrimAny(ipath, '/'))
+            return dvLoget(fs, dvTrimAny(ipath, '/').split('/'))
         }
 
-        //数据结构转换 DvFsHddStruct -->  DvFsMemStruct
-        const toMemStruct = (inode: DvFsHddStruct): DvFsMemStruct | undefined => {
-            //!! _content_ 必须
-            if (!inode._content_) return undefined
-            //登录态
+        //从磁盘结构 构建内存树
+        //!! fs-initing 阶段执行，创建 FS 系统内存树
+        const mountBaseDir = async (): Promise<boolean> => {
+            const dvMem = useDvMemStore()
+            const memBase = dvMem.addr('/')
+            if (memBase === undefined) {
+                dvTriggerKernelError('发生内核错误，文件目录已损坏', 'PANIC')
+                return false
+            }
+            if (dvMem.addr('/sys') !== undefined) {
+                //dvTriggerKernelError('发生内核错误，文件目录已创建')
+                return true
+            }
+            //获取 dvHdd 磁盘根目录
+            const base = addr('/')
+            if (!base || !dvIs.nemobj(base)) {
+                dvTriggerKernelError('发生内核错误，磁盘文件目录已损坏', 'PANIC')
+                return false
+            }
+            //获取根目录列表
+            const fids = Object.keys(base).filter((i: string) => ipu.isFid(i))
+            if (fids.length <= 0) {
+                dvTriggerKernelError('发生内核错误，磁盘文件目录已损坏', 'PANIC')
+                return false
+            }
+            //依次挂载内存树根节点
+            const errs: string[] = []
+            for (const i of fids) {
+                const hdd = base[i]
+                if (!hdd) continue
+                //转换为内存节点，递归转换所有子节点
+                const mem = toMemStruct(hdd as DvFsHddStruct, true)
+                //挂载到 dvMem
+                const mnti = await dvMem.mountInInode(memBase, mem)
+                if (!mnti) errs.push(i)
+            }
+
+            if (errs.length > 0) {
+                dvTriggerKernelError(
+                    `发生内核错误，无法挂载这些系统目录 ${errs.join(',')}`,
+                    'PANIC',
+                )
+                return false
+            }
+            return true
+        }
+
+        //定义用户的持久化数据
+        //!! 键名是各用户的 uSign
+        //!! 值是完整的 用户目录结构，与 dvMem.fs.user 完全镜像
+        const userFs = reactive<Record<string, DvFsHddStruct>>({})
+        //创建新的用户数据结构，当用户首次登录时执行
+        //!! 用户登录后 user-initing 阶段，尝试读取用户空间数据时，如果未找到用户数据，表示这是新用户，需要执行此方法
+        //!! 此方法调用时，内存树已经存在，session 文件节点已经创建
+        const createUserDir = async (): Promise<boolean> => {
             const usign = uSign()
-            const mode = inode._inode_.mode
-            const type = inode._inode_.extra?.type ?? ''
-            const itp = `${mode}${type === '' ? '' : '+' + type}`
+            //!! 执行此操作时，用户必须已登录
+            if (!usign) return false
+            //!! 用户数据已存在
+            if (userFs[usign] !== undefined) return true
 
-            //特殊类型
-            //用户自行安装的 program
-            if (itp === 'reg+program') {
-                if (!usign) return undefined
-                const cnt = inode._content_ as PlainObject
-                if (!dvIs.nemobj(cnt)) return undefined
-                const def = cnt?.define
-                const pn = def && def.programMeta ? def.programMeta.name : ipu.last(inode._ipath_)
-                const mem: DvFsMemStruct = {
-                    _ipath_: `/program/${pn}`,
-                    //!! 以 {} 作为 target，避免把运行时标记写进磁盘节点的 _inode_
-                    _inode_: dvExtend<DvFsInodeMemStruct>(false, {}, inode._inode_, {
-                        owner: usign,
-                        extra: {
-                            type: 'program',
-                            component: pn,
+            //获取内存树
+            const dvMem = useDvMemStore()
+            //读取已存在的 数据库列表
+            const dbs = dvMem.fs?.mnt?.db ?? {}
+            const dbNodes: Record<string, DvFsHddStruct> = {}
+            //获取所有的 数据 key
+            const dbks = Object.keys(dbs).filter((i: string) => ipu.isFid(i))
+            if (dbks.length > 0) {
+                for (const dbk of dbks) {
+                    const dbi = dbs?.[dbk]
+                    if (!dbi) continue
+                    dbNodes[dbk] = toHddStruct(dbi as DvFsMemStruct, true)
+                }
+            }
+
+            const unode = sysDir(
+                'user',
+                {},
+                {
+                    //!! 每个用户都必然存在的文件节点
+                    //系统个性化配置
+                    config: fnode(
+                        'user/config',
+                        { mime: '*.conf' },
+                        {
+                            //!! 与 /sys/config 文件内容结构一致，此处的将 覆盖 系统原始参数
+                            //...
                         },
-                        //运行时标记
-                        modi: 0,
-                        lock: 0,
-                        open: [],
-                    }),
-                    //添加 icache
-                    _icache_: {
-                        handler: null,
-                        remoteComponent: cnt.component,
-                    },
-                }
-                if (def) mem._icache_.meta = dvCopy(def.programMeta)
-                return mem
-            }
+                    ),
+                    //用户自行安装的 程序|驱动
+                    //!! Deskvue 系统中，用户只能通过 DvAppStore 安装可用的 程序|驱动
+                    //!! 这里存放 程序的安装文件 reg+ext 类型，*.progi(程序) | *.drvi(驱动)
+                    //!! 在 user-initing 阶段，会读取这里的 程序|驱动 的安装文件，解析后挂载到对应的内存树目录下：
+                    //!!    程序挂载到 dvMem.fs.program
+                    //!!    驱动挂载到 dvMem.fs.dev.driver
+                    program: dnode('user/program'),
+                    driver: dnode('user/driver'),
+                    //系统中已有的数据库配置，复制一份到用户空间
+                    //!! 用户对数据库进行个性化配置，将修改这里的内容
+                    db: dnode('user/db', {}, dbNodes),
 
-            //mime 类型
-            else if (itp === 'reg+mime') {
-                //此类型文件在 dvHdd 中只保存 url 引用，不保存实际内容
-                //映射到内存树的时候，在 _icache_.content 中写入这些 引用
-                return {
-                    _ipath_: inode._ipath_,
-                    //!! 以 {} 作为 target，避免把运行时标记写进磁盘节点的 _inode_
-                    _inode_: dvExtend<DvFsInodeMemStruct>({}, inode._inode_, {
-                        //运行时标记
-                        modi: 0,
-                        lock: 0,
-                        open: [],
-                    }),
-                    //添加 icache
-                    _icache_: {
-                        handler: null,
-                        content:
-                            typeof inode._content_ === 'string'
-                                ? inode._content_
-                                : dvCopy(inode._content_),
-                    },
-                }
-            }
+                    //之后所用用户数据，都在此节点下
+                    //...
+                },
+            )
 
-            //系统文件 /sys 路径下的
-            else if (inode._ipath_.startsWith('/sys/')) {
-                return {
-                    _ipath_: inode._ipath_,
-                    //!! 以 {} 作为 target，避免把 auth/owner/运行时标记写进磁盘节点的 _inode_
-                    _inode_: dvExtend<DvFsInodeMemStruct>({}, inode._inode_, {
-                        auth: 101,
-                        owner: 'root',
-                        //运行时标记
-                        modi: 0,
-                        lock: 0,
-                        open: [],
-                    }),
-                    //添加 icache
-                    _icache_: {
-                        handler: null,
-                    },
-                }
-            }
-
-            //...更多其他类型文件节点转换
-
-            //通用转换方法
-            else {
-                return {
-                    _ipath_: inode._ipath_,
-                    //!! 以 {} 作为 target，避免把运行时标记写进磁盘节点的 _inode_
-                    _inode_: dvExtend<DvFsInodeMemStruct>({}, inode._inode_, {
-                        //运行时标记
-                        modi: 0,
-                        lock: 0,
-                        open: [],
-                    }),
-                    //添加 icache
-                    _icache_: {
-                        handler: null,
-                    },
-                }
-            }
+            //写入
+            userFs[usign] = unode
+            await dvWait(10)
+            return true
         }
-        const toHddStruct = (inode: DvFsMemStruct): DvFsHddStruct | undefined => {
-            //生成持久化结构
-            const hdd: PlainObject = {
-                _ipath_: inode._ipath_,
-                //!! 以 {} 作为 target，避免 __delete__ 标记删到内存节点的运行时字段
-                _inode_: dvExtend<DvFsInodeHddStruct>({}, inode._inode_, {
-                    //使用 dvExtend 的 __delete__ 标记
-                    modi: '__delete__',
-                    lock: '__delete__',
-                    open: '__delete__',
-                }),
+        //用户登录后，将 usign 键名下的 user 目录完整的挂载到 内存树中的 user 目录
+        //!! dvHdd.userFs.[iso:uuid] 完整的转移到内存树 dvMem.fs.user 目录下
+        //!! 在 user-initing 阶段执行，此时内存树目录结构已经存在
+        const mountUserDir = async (): Promise<boolean> => {
+            const dvMem = useDvMemStore()
+            if (!dvMem.fs.user) {
+                dvTriggerKernelError('发生内核错误，用户文件目录损坏', 'PANIC')
+                return false
             }
-            //!! 如果是运行时生成的文件，内容通常由对应的处理程序 program 创建，并临时写入 _icache_.content
-            //!! 不能用真值判断，空字符串 '' 也是有效内容（例如 truncate(0) 之后）
-            if (inode._icache_?.content !== undefined) {
-                //!! 字符串按值保存，json 对象需要拷贝，避免磁盘数据与运行时数据共享引用
-                hdd._content_ =
-                    typeof inode._icache_.content === 'string'
-                        ? inode._icache_.content
-                        : dvCopy(inode._icache_.content)
+            const uMem = dvMem.fs.user as DvFsMemStruct
+
+            //用户必须已登录
+            const usign = uSign()
+            if (!usign) {
+                dvTriggerKernelError('发生内核错误，无法获取登录用户信息', 'PANIC')
+                return false
             }
 
-            //原有 持久化结构
-            let ost = addr(inode._ipath_)
-            //!! 未持久化过的节点 直接返回新生成的
-            if (!ost) {
-                //!! _content_ 是必须的
-                if (!hdd._content_) hdd._content_ = {}
-                return hdd as DvFsHddStruct
+            //用户文件不存在，创建
+            if (userFs?.[usign] === undefined) {
+                const create = await createUserDir()
+                if (!create || !dvIs.nemobj(userFs[usign])) {
+                    dvTriggerKernelError('发生内核错误，无法创建用户文件目录', 'PANIC')
+                    return false
+                }
             }
-            //已经持久化过的数据，则覆盖
-            //!! 这里的 ost 就是 fs 中的响应式节点，原地合并才能同步写回磁盘数据（persist 才会保存）
-            const nhdd = dvExtend<DvFsHddStruct>(ost, hdd)
-            if (!nhdd._content_) nhdd._content_ = {}
-            return nhdd
+            if (userFs?.[usign] === undefined || !dvIs.nemobj(userFs[usign])) return false
+
+            //批量挂载到内存树
+            const errs: string[] = []
+            for (const i in userFs[usign]) {
+                const hdd = userFs[usign][i]
+                if (!hdd) continue
+                //转换为内存节点
+                const mem = toMemStruct(hdd as DvFsHddStruct, true)
+                //挂载到 dvMem
+                const mnti = await dvMem.mountInInode(uMem, mem)
+                if (!mnti) errs.push(i)
+            }
+
+            if (errs.length > 0) {
+                dvTriggerKernelError(
+                    `发生内核错误，无法挂载这些用户文件 ${errs.join(',')}`,
+                    'PANIC',
+                )
+                return false
+            }
+
+            return true
         }
 
-        //用户登录后，将 usign 键名下的 user 目录完整的映射为 内存树中的 user 目录
-        //!! dvHdd.fs.[iso:uuid].user 与 dvMem.fs.user 目录结构完全一致
-        const mntUserDir = (): DvFsMemStruct | undefined => {}
-
+        //!! 这些方法需要移动到 内存接口中 dvMemStore
         //系统设置数据，如果用户已登录，则会合并用户设置，computed 只读
-        const sysConfig = computed<PlainObject | undefined>(() => {
+        /*const sysConfig = computed<PlainObject | undefined>(() => {
             const conf = fs['/sys/config']?._content_
             const usign = uSign()
             if (!usign || !fs[usign]) return conf
@@ -401,30 +650,61 @@ export const useDvHddStore = defineStore(
                 rtn.push(mpi)
             }
             return rtn
-        }
+        }*/
 
-        //将传入的 DvFsHddStruct 持久化节点，按 ipath 写入 dvHdd.fs
-        const fsync = async (ipath: string, fnode: DvFsHddStruct): Promise<boolean> => {
-            ipath = ipu.norm(ipath)
+        //写入磁盘
 
-            //系统文件 /sys/*
-            if (ipath.startsWith('/sys/')) {
+        //将传入的 DvFsMemStruct 内存树节点，按 ipath 写入 dvHdd.fs
+        //const fsync = async (ipath: string, fnode: DvFsHddStruct): Promise<boolean> => {
+        const fsync = async (inode: DvFsMemStruct): Promise<boolean> => {
+            const ipath = inode._ipath_
+
+            //!! 排除 / 和 /*** 系统目录
+            if (ipu.isBase(ipath) || ipu.isRoot(ipath)) {
+                dvTriggerKernelError('发生内核错误，用户无法修改系统文件')
+                return false
             }
 
-            //用户数据
+            //节点 fid
+            const fid = ipu.last(ipath)
+            //父路径
+            const pp = ipu.parent(ipath)
+            //获取父节点
+            const pnode = addr(pp)
+            if (!pnode) {
+                dvTriggerKernelError(`发生内核错误，找不到父目录 ${pp}`)
+                return false
+            }
+            //子节点(已持久化的 要写入的 节点)
+            const cnode = pnode?.[fid]
+            //内存节点 转为 磁盘节点
+            const hdd = toHddStruct(inode, false)
+
+            //如果不存在要写入的节点
+            if (!cnode) {
+                pnode[fid] = hdd
+            }
+
+            //如果节点已存在，合并
+            else {
+                //pnode[fid] = dvExtend<DvFsHddStruct>(false, cnode, hdd)
+                cnode._inode_ = dvExtend<DvFsInodeHddStruct>(false, cnode._inode_, hdd._inode_)
+                cnode._content_ = hdd._content_
+            }
+
+            await dvWait(10)
+            return true
         }
 
         return {
             fs,
 
             addr,
-            toMemStruct,
-            toHddStruct,
+            mountBaseDir,
 
-            sysConfig,
-
-            getDbSchema,
-            getUserProgramInodes,
+            userFs,
+            createUserDir,
+            mountUserDir,
 
             fsync,
         }

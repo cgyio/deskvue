@@ -159,10 +159,18 @@ export class DvLnkInode extends DvInode {
     override lookup(ipath: string, opts?: PlainObject, callCtx?: DvFsCallContext): any {
         return this._forward('lookup', callCtx, ipath, opts, callCtx)
     }
-    override async mkdir(ipath: string, opts?: PlainObject, callCtx?: DvFsCallContext): Promise<any> {
+    override async mkdir(
+        ipath: string,
+        opts?: PlainObject,
+        callCtx?: DvFsCallContext,
+    ): Promise<any> {
         return this._forward('mkdir', callCtx, ipath, opts, callCtx)
     }
-    override async create(ipath: string, opts?: PlainObject, callCtx?: DvFsCallContext): Promise<any> {
+    override async create(
+        ipath: string,
+        opts?: PlainObject,
+        callCtx?: DvFsCallContext,
+    ): Promise<any> {
         return this._forward('create', callCtx, ipath, opts, callCtx)
     }
     override async symlink(
@@ -176,19 +184,10 @@ export class DvLnkInode extends DvInode {
 
     //刷磁盘：符号链接节点自身的持久化，不转发
     //!! 磁盘中的 _content_ 保存的就是 目标 ipath
-
-    protected override async _getFsyncContent?(
-        callCtx?: DvFsCallContext,
-    ): Promise<DvFsHddStruct | undefined> {
-        //没有目标节点时 不持久化
-        if (!this._targetIpath()) return undefined
-        return useDvHddStore().toHddStruct(this.inode)
-    }
-    protected override async _doFsync?(
-        content: DvFsHddStruct,
+    protected override async _doFsync(
         dvHdd: DvHddStore,
         callCtx?: DvFsCallContext,
     ): Promise<boolean> {
-        return await dvHdd.fsync(this.ipath, content)
+        return await dvHdd.fsync(this.inode)
     }
 }

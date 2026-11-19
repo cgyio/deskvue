@@ -29,8 +29,26 @@ import {
     type DvInodeHandler,
     type DvProgramRegInode,
 } from './index'
-import { DvDirInode } from './dv-dir'
-import { dvIs, dvExtend, dvCopy } from '@utils/core'
+//import { DvDirInode } from './dv-dir'
+import { dvIs, dvWait, dvExtend, dvCopy, dvSortByKv } from '@utils/core'
+
+//ls 传入的额外参数类型
+export type DvFsLsSortKey = 'asc' | 'desc' | `${'a' | 'c' | 'm'}:${'asc' | 'desc'}`
+export interface DvFsLsOpts {
+    //是否递归获取所有子目录内部节点，默认 false
+    recursive?: boolean
+    //sort 排序方法，默认按 fid 定义先后顺序
+    sort?: DvFsLsSortKey | ((items: DvFsLsItem[]) => DvFsLsItem[])
+    //filter 筛选方法
+    filter?: (items: DvFsLsItem) => boolean
+    [K: string]: any
+}
+//ls 得到的子节点 status 数据类型
+export interface DvFsLsItem {
+    fid: string
+    ipath: string
+    inode: DvFsInodeMemStruct
+}
 
 export class DvInode {
     //文件节点的全局唯一路径字符串，寻址依据
@@ -275,9 +293,13 @@ export class DvInode {
     }
     //脏标记
     protected _setModi(modi: boolean, callCtx?: DvFsCallContext): boolean {
-        //if (!this.isInodeEditable(callCtx)) return false
         this.inode._inode_.modi = modi ? 1 : 0
-        return true
+        //!! 操作内存中的 脏标记缓存
+        const dvMem = useDvMemStore()
+        //写入 modiCache
+        if (modi) return dvMem.setInodeModiCache(this.ipath)
+        //从缓存中删除
+        return dvMem.unsetInodeModiCache(this.ipath)
     }
     //锁
     protected _setLock(lock: boolean, callCtx?: DvFsCallContext): boolean {
@@ -354,7 +376,7 @@ export class DvInode {
         ipath: string,
         opts?: PlainObject,
         callCtx?: DvFsCallContext,
-    ): Promise<DvDirInode | undefined> {
+    ): Promise<DvInodeHandler<'DvDirInode'> | undefined> {
         return this._unSupport('mkdir')
     }
     //create 创建文件节点
@@ -370,7 +392,7 @@ export class DvInode {
         ipath: string,
         opts?: PlainObject,
         callCtx?: DvFsCallContext,
-    ): Promise<DvInode | undefined> {
+    ): Promise<DvInodeHandler<'DvLnkInode'> | undefined> {
         return this._unSupport('symlink')
     }
     //rename 重命名自身节点
@@ -423,6 +445,69 @@ export class DvInode {
     //rmdir 清空目录
     async rmdir(callCtx?: DvFsCallContext): Promise<boolean> {
         return this._unSupport('rmdir')
+    }
+    //ls 列出子节点
+    async ls(opts?: DvFsLsOpts, callCtx?: DvFsCallContext): Promise<DvFsLsItem[]> {
+        const dvMem = useDvMemStore()
+        //权鉴，列出子节点需要 r+x
+        if (this.ac('rx', callCtx) !== true) return []
+
+        //子节点 fids
+        const fids = dvMem.inodeFids(this.inode)
+        if (fids.length <= 0) return []
+        let items: DvFsLsItem[] = fids.map((i: string) => {
+            const idi = this.inode[i] as DvFsMemStruct
+            return {
+                fid: i,
+                ipath: idi?._ipath_,
+                inode: dvCopy(idi?._inode_ ?? {}),
+            }
+        })
+
+        //filter 筛选
+        if (typeof opts?.filter === 'function') {
+            items = items.filter(opts.filter)
+        }
+
+        //先递归
+        if (opts?.recursive === true) {
+            const subOpts = { recursive: true } as DvFsLsOpts
+            if (typeof opts?.filter === 'function') subOpts.filter = opts.filter
+
+            for (const item of items) {
+                const handler = useDvInodeHandler(item.ipath, callCtx)?.handler
+                if (!handler) continue
+                const subItems = await handler.ls(subOpts, callCtx)
+                if (subItems.length > 0) {
+                    items.push(...subItems)
+                }
+            }
+        }
+
+        //最后排序
+        if (opts?.sort !== undefined) {
+            //自定义排序方法
+            if (typeof opts.sort === 'function') {
+                items = opts.sort(items)
+            }
+            //使用预定义的排序方法
+            else {
+                const sort = opts.sort as DvFsLsSortKey
+                //默认按 fid 排序
+                if (!sort.includes(':')) {
+                    items = dvSortByKv(items, 'fid', sort as 'asc' | 'desc') as DvFsLsItem[]
+                }
+                //按 inode.time.a|c|m 排序
+                else {
+                    const sa = sort.split(':')
+                    const sk = sa[0] as 'a' | 'c' | 'm'
+                    const st = sa[1] as 'asc' | 'desc'
+                    items = dvSortByKv(items, ['inode', 'time', sk], st) as DvFsLsItem[]
+                }
+            }
+        }
+
+        return items
     }
     //attr 元数据
     getattr(callCtx?: DvFsCallContext): ComputedRef<DvFsInodeMemStruct | undefined> {
@@ -511,13 +596,12 @@ export class DvInode {
         if (!stage || stage.stageBefore('is-login')) return false
         //!! 根目录 / 和 /*** 不能持久化
         if (this.isBaseDir() || this.isRootDir()) return false
-        //无 脏标记
-        if (this.inode._inode_.modi !== 1) return false
 
-        //子类钩子：根据 mode/extra.type 生成需要持久化的 DvFsHddStruct 数据
-        //!! 如果返回 undefined 数据，表示不需要持久化
-        const content: DvFsHddStruct | undefined = await this._getFsyncContent?.(callCtx)
-        if (!content) return false
+        const dvMem = useDvMemStore()
+        //必须包含 脏标记，才能刷盘
+        if (this.inode._inode_.modi !== 1 && !dvMem.hasInodeModiCache(this.ipath)) return false
+        //!! 如果此节点已标记为 正在刷盘，则终止本次刷盘
+        if (dvMem.isInodeModiFsyncing(this.ipath)) return false
 
         //dvHdd 磁盘
         const dvHdd = useDvHddStore()
@@ -530,14 +614,21 @@ export class DvInode {
             return false
         }
 
+        //!! 标记此节点 正在刷盘 状态
+        dvMem.setInodeModiFsyncing(this.ipath, true)
+
         //!! 根据当前节点的实际类型，有不同的持久化方法
         //!! 子类实现具体 刷磁盘方法
-        const syncOk = (await this._doFsync?.(content, dvHdd, callCtx)) ?? false
+        const syncOk = (await this._doFsync?.(dvHdd, callCtx)) ?? false
         if (!syncOk) {
             dvTriggerKernelError(`[DvInode] 内核错误：保存节点 ${this.ipath} 数据失败`, 'OOPS')
+            dvMem.setInodeModiFsyncing(this.ipath, false)
             return false
         }
+
         //写入磁盘后 清除脏标记
+        dvMem.setInodeModiFsyncing(this.ipath, false)
+        await dvWait(10)
         return this._setModi(false)
     }
 
@@ -550,12 +641,10 @@ export class DvInode {
     protected async _onOpen?(callCtx?: DvFsCallContext): Promise<any>
     //release 释放连接 / 中断请求
     protected async _onRelease?(callCtx?: DvFsCallContext): Promise<any>
-    //fsync 生成需要持久化的数据结构 DvFsHddStruct
-    protected async _getFsyncContent?(callCtx?: DvFsCallContext): Promise<DvFsHddStruct | undefined>
-    //刷磁盘具体方法
-    protected async _doFsync?(
-        content: DvFsHddStruct,
-        dvHdd: DvHddStore,
-        callCtx?: DvFsCallContext,
-    ): Promise<boolean>
+    //最终刷盘操作
+    //!! 默认使用 dvHdd.fsync() 方法
+    //!! 不同的文件节点类型，可能有不同的刷盘方法，应在对应的节点句柄类中覆盖这个钩子
+    protected async _doFsync(dvHdd: DvHddStore, callCtx?: DvFsCallContext): Promise<boolean> {
+        return await dvHdd.fsync(this.inode)
+    }
 }

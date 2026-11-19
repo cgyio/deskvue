@@ -12,14 +12,17 @@ import { type App } from 'vue'
 import { type DvFsProgramMeta } from '@/kernel'
 
 //!! 依次 import dv-* 系列组件
-import DvCliService from './dv-cli-service/index.vue'
-import DvUacService from './dv-uac-service/index.vue'
+//service
+import DvGuiService from './dv-gui-service/index.vue'
+import DvWinService from './dv-win-service/index.vue'
+//program
 import DvDesktop from './dv-desktop/index.vue'
+//普通组件
 
 //Deskvue 全局组件库注册表
 export const dvComponents = {
-    DvCliService,
-    DvUacService,
+    DvGuiService,
+    DvWinService,
 
     DvDesktop,
 }
@@ -49,12 +52,13 @@ export const setupDvComponents = (app: App<Element>): void => {
     })
 
     //!! 将所有 program 组件注入到 app.config.globalProperties.$programs{} 中
-    app.config.globalProperties.$programs = {
-        sys: { programs, services },
-        //准备业务库 程序与服务 的容器
-        lib: {
-            programs: {},
-            services: {},
-        },
+    if (!app.config.globalProperties.$programs) {
+        app.config.globalProperties.$programs = {} as PlainObject
+    }
+    app.config.globalProperties.$programs.sys = { programs, services }
+    //准备业务库 程序与服务 的容器
+    app.config.globalProperties.$programs.lib = {
+        programs: {},
+        services: {},
     }
 }

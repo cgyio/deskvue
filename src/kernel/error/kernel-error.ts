@@ -64,7 +64,7 @@ export class DvKernelError extends Error {
     //内核错误，崩溃
     panic() {
         const gdk = globalThis.DvKernel
-        if (!gdk) {
+        if (!gdk || !gdk.stage) {
             const doc = globalThis.document
             if (!doc) return
             doc.open()
@@ -92,16 +92,18 @@ Dsekvue Kernel Panic 内核已崩溃
             throw 'Deskvue Kernel Panic !!'
         }
 
-        //prints
-        gdk.prints.value.push('')
-        gdk.prints.value.push(`[.dv-kernel-error]Dsekvue Kernel Panic 内核已崩溃`)
-        gdk.prints.value.push(`[.dv-kernel-error]可能的原因：${this.message}`)
+        //跳转 kernel-panic-error stage
+        gdk.stage.stageToError('kernel-panic-error', `::${this.message}`)
         throw 'Deskvue Kernel Panic !!'
     }
 }
 
 //抛出 内核错误
-export const dvTriggerKernelError = (e: any, level: DvKernelErrorLevel = 'WARN'): any => {
+export const dvTriggerKernelError = (
+    e: any,
+    level: DvKernelErrorLevel = 'WARN',
+    returnValue?: any,
+): any => {
     //创建内核错误
     let ke: DvKernelError
     //globalThis.DvKernel
@@ -134,7 +136,7 @@ export const dvTriggerKernelError = (e: any, level: DvKernelErrorLevel = 'WARN')
             //根据 ke 的 level 决定是否 panic，不 panic 则不会终止后续
             false,
             //如果不终止，则将 ke 内核错误实例 返回给外部调用者，外部可能有其他处理逻辑
-            ke,
+            returnValue !== undefined ? returnValue : ke,
         )
     }
 }

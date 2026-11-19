@@ -263,6 +263,21 @@ export const dvCopy = <T extends object>(obj: T): T => {
     return dvExtend(true, {} as T, obj) as T
 }
 
+//json 内容 深拷贝
+//!! 校验可序列化性（循环引用|BigInt 等会失败）
+export const dvJsonCopy = (obj: PlainObject | any[]): PlainObject | any[] => {
+    const empty = dvIs.array(obj) ? [] : {}
+    try {
+        const json = JSON.stringify(obj)
+        if (json === undefined) return empty
+        const copy = JSON.parse(json)
+        if (!dvIs.plainObject(copy) && !dvIs.array(copy)) return empty
+        return copy
+    } catch (e) {
+        return empty
+    }
+}
+
 //dvWrap 按照 [foo, 0, bar, jaz] 键链 将值包裹为 多层 {}
 //支持传入 字符串格式的 键链，支持的分隔符 . 或 /
 export const dvWrap = (
@@ -403,12 +418,7 @@ export const dvCssstr = (source?: PlainObject | string | (PlainObject | string)[
         const value = (source as PlainObject)[key]
 
         //跳过 无效值
-        if (
-            value === undefined ||
-            value === null ||
-            value === '' ||
-            typeof value === 'boolean'
-        )
+        if (value === undefined || value === null || value === '' || typeof value === 'boolean')
             continue
 
         //数值：补 px（css 变量与无单位属性除外）
@@ -558,7 +568,6 @@ export const dvTrimAnyEnd = (str: string, chars: string): string => {
     const escaped = chars.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     return str.replace(new RegExp(`[${escaped}]+$`), '')
 }
-
 //首字母大写
 export const dvUcfirst = (str: string): string =>
     `${str.substring(0, 1).toUpperCase()}${str.substring(1).toLowerCase()}`
@@ -604,6 +613,12 @@ export const dvKabab = (str: string, split: string = '-'): string => {
         return str.toLowerCase()
     }
     return dvKababCase(str, split)
+}
+//将 html 标记转为纯字符 <html></html> --> &lt;html&gt;&lt;/html&gt;
+export const dvEscapeHtml = (str: string): string => {
+    const div = document.createElement('div')
+    div.textContent = str
+    return div.innerHTML
 }
 
 //比较 0.10.8 形式的 version 的先后关系
@@ -687,6 +702,27 @@ export const dvUnion = (...arrs: any[][]): any[] => {
 //数组去重
 export const dvUnique = (arr: any[]): any[] => {
     return [...new Set(arr)]
+}
+//对 PlainObject[] 数组，按元素中的某个键值进行排序
+//!! 键值可以是 string | number，key 支持深层键名（同 dvLoget，如 'foo.bar.3.jaz' 或 ['foo', 'bar', 3, 'jaz']）
+export const dvSortByKv = (
+    arr: PlainObject[],
+    key: string | (string | number)[],
+    type: 'asc' | 'desc' = 'asc',
+): PlainObject[] => {
+    if (!dvIs.array(arr) || dvIs.empty(key)) return arr ?? []
+    const dir = type === 'desc' ? -1 : 1
+    return [...arr].sort((a, b) => {
+        const v1 = dvLoget(a, key)
+        const v2 = dvLoget(b, key)
+        if (v1 === v2) return 0
+        //空值统一排在末尾，不参与升降序
+        if (v1 === undefined || v1 === null) return 1
+        if (v2 === undefined || v2 === null) return -1
+        //数字按数值比较，其余按字符串比较
+        if (typeof v1 === 'number' && typeof v2 === 'number') return (v1 - v2) * dir
+        return String(v1).localeCompare(String(v2), 'zh-CN') * dir
+    })
 }
 
 /**

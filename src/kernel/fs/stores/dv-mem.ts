@@ -47,8 +47,10 @@ import type {
     DvFsPidCache,
     DvFsPidItem,
     DvFsProgramRegInodeIcache,
+    DvFsProgramType,
+    DvFsMemSessionStruct,
 } from '../types'
-import { dvFsFidKeywords } from '../types'
+import type { DvConfigDefine } from '../../config'
 import { useDvFsIpath, useDvFsPid } from '../utils'
 import { dvIs, dvWait, dvExtend, dvCopy, dvLoget, dvTrimAny } from '@utils/core'
 import { md5 } from 'js-md5'
@@ -61,6 +63,9 @@ export const useDvMemStore = defineStore(
     () => {
         //模拟 Linux 文件系统的 内存文件树
         //fs 本身就是一个 DvFsMemStruct 表示 / 全局根目录 base
+        //!! 内存树必须定义为 / base 全局根目录结构，包含必要的 _ipath_, _inode_, _icache_
+        //!! 因为通过 mountInInode 方法创建目录结构时，需要父节点
+        //!! 完整的 fs 目录结构 完整的 从 dvHdd 复制创建，此处不需要定义
         const fs = reactive<DvFsMemStruct>({
             _ipath_: '/',
             _inode_: {
@@ -77,51 +82,17 @@ export const useDvMemStore = defineStore(
                 //缓存 根目录的 句柄实例，FS 初始化时会自动生成
                 handler: null,
             },
-
-            //!! /sys 系统根目录
-            sys: {
-                _ipath_: '/sys',
-                _inode_: {
-                    mode: 'dir',
-                    auth: 101,
-                    owner: 'root',
-                    time: { a: 0, c: 0, m: 0, d: 0 },
-                    name: '',
-                    modi: 0,
-                    lock: 0,
-                    open: [],
-                },
-                _icache_: {
-                    //缓存 /sys 句柄实例，FS 初始化时会自动生成
-                    handler: null,
-                },
-
-                //!! /sys/prog0 根程序(0 号进程)
-                prog0: {
-                    _ipath_: '/sys/prog0',
-                    _inode_: {
-                        mode: 'reg',
-                        auth: 101,
-                        owner: 'root',
-                        time: { a: 0, c: 0, m: 0, d: 0 },
-                        name: '',
-                        modi: 0,
-                        lock: 0,
-                        open: [],
-                        extra: {
-                            type: 'program',
-                            component: 'DvOs',
-                        },
-                    },
-                    _icache_: {
-                        //缓存 /sys 句柄实例，FS 初始化时会自动生成
-                        handler: null,
-                    },
-                },
-            },
         })
         //外部暴露只读 fs 树
         const _fs = readonly(fs)
+        //脏标记缓存
+        //!! 节点句柄在修改节点脏标记时，同步写入此缓存
+        //!! 键名是节点 ipath，键值是正在刷盘标记 boolean
+        const modiCache = reactive<Record<string, boolean>>({
+            //'/foo/bar': false,
+        })
+        //外部暴露只读的 modiCache
+        const _modiCache = readonly(modiCache)
         //_inode_.name 缓存
         //!! fs 初始化时会根据现有的目录结构，构造这个缓存
         //!! 运行时 新建|删除|改名 等操作的同时，需要更新此缓存
@@ -198,6 +169,11 @@ export const useDvMemStore = defineStore(
             return addrInInode(inode, name) !== undefined
         }
 
+        //获取某个节点的所有子节点 fids
+        const inodeFids = (inode: DvFsMemStruct): string[] => {
+            return Object.keys(inode).filter((i: string) => ipu.isFid(i))
+        }
+
         //内存寻址，返回 文件节点数据(响应式)
         //!! ipath 参数可以是以下形式：
         //      真实的文件节点 全局唯一路径字符串，inode._ipath_
@@ -229,7 +205,7 @@ export const useDvMemStore = defineStore(
             }
 
             //子节点，先直接查找一次
-            const node = dvLoget(fs, dvTrimAny(ipath, '/'), undefined)
+            const node = dvLoget(fs, dvTrimAny(ipath, '/').split('/'), undefined)
             if (isInode(node)) return node
 
             //通过父节点，查找子节点
@@ -292,23 +268,32 @@ export const useDvMemStore = defineStore(
 
             //优先作为 fid 查找
             //先查找 program 目录
-            let node = dvLoget(fs.program ?? {}, rname, undefined)
+            let node = dvLoget(fs.program ?? {}, [rname], undefined)
             if (isInode(node)) return node
             //然后查找 service 目录
-            node = dvLoget(fs.sys.service ?? {}, rname, undefined)
+            node = dvLoget(fs.sys.service ?? {}, [rname], undefined)
+            if (isInode(node)) return node
+            //!! 新增的 service/kernel 内核服务目录
+            node = dvLoget(fs.sys.service.kernel ?? {}, [rname], undefined)
             if (isInode(node)) return node
 
             //未找到，则作为显示名称
             //先查找 program 目录
             let fid = nameExistsInInode(fs.program ?? {}, rname)
             if (fid !== false) {
-                node = dvLoget(fs.program ?? {}, fid, undefined)
+                node = dvLoget(fs.program ?? {}, [fid], undefined)
                 if (isInode(node)) return node
             }
             //未找到，再查找 service 目录
             fid = nameExistsInInode(fs.sys.service ?? {}, rname)
             if (fid !== false) {
-                node = dvLoget(fs.sys.service ?? {}, fid, undefined)
+                node = dvLoget(fs.sys.service ?? {}, [fid], undefined)
+                if (isInode(node)) return node
+            }
+            //!! 新增的 service/kernel 内核服务目录
+            fid = nameExistsInInode(fs.sys.service.kernel ?? {}, rname)
+            if (fid !== false) {
+                node = dvLoget(fs.sys.service.kernel ?? {}, [fid], undefined)
                 if (isInode(node)) return node
             }
 
@@ -316,10 +301,12 @@ export const useDvMemStore = defineStore(
             return undefined
         }
         //内存寻址，快速返回当前的 session 会话数据，只有用户登录成功后才能获取到
-        const addrSession = (): DvFsMemStruct | undefined => {
+        const addrSession = (): DvFsMemSessionStruct | undefined => {
             const stage = globalThis.DvKernel.stage
             if (!stage || stage.stageBefore('is-login')) return undefined
-            return addr('/sys/session')
+            const session = addr('/sys/session') as DvFsMemSessionStruct
+            if (!session || !isInode(session)) return undefined
+            return session
         }
         //获取指定 inode 节点下的有效的子节点，返回 fid[]
         const inodeChildFids = (inode: DvFsMemStruct): string[] => {
@@ -455,6 +442,61 @@ export const useDvMemStore = defineStore(
             }
             await dvWait(50)
             return nip
+        }
+        //在指定的 inode 节点下，挂载已有的 节点，需要递归处理 inodeNameCache
+        const mountInInode = async (
+            inode: DvFsMemStruct,
+            mount: DvFsMemStruct,
+        ): Promise<boolean> => {
+            let mip = mount._ipath_
+            const mnm = ipu.last(mip)
+            if (inode[mnm] !== undefined) {
+                dvTriggerKernelError(`发生内核错误，无法挂在文件 ${mnm}，文件已存在`)
+                return false
+            }
+            const pip = ipu.parent(mip)
+            if (pip !== inode._ipath_) {
+                mount._ipath_ = ipu.join(inode._ipath_, mnm)
+                mip = mount._ipath_
+            }
+            //inodeNameCache
+            if (mount._inode_.name !== mnm) {
+                const snm = mount._inode_.name
+                if (!inodeNameCache?.[snm]) inodeNameCache[snm] = []
+                if (inodeNameCache[snm].includes(mip)) {
+                    dvTriggerKernelError(`发生内核错误，无法挂在文件 ${snm}，文件已存在`)
+                    return false
+                }
+                inodeNameCache[snm].push(mip)
+            }
+            //写入
+            inode[mnm] = {
+                _ipath_: mip,
+                _inode_: dvCopy(mount._inode_),
+                _icache_: dvCopy(mount._icache_),
+            }
+            await dvWait(10)
+
+            //递归子节点
+            const children = inodeFids(mount)
+            const errs: string[] = []
+            if (children.length > 0) {
+                for (const i of children) {
+                    const child = mount?.[i]
+                    if (!child) continue
+                    const mnti = await mountInInode(inode[mnm], child)
+                    if (!mnti) {
+                        errs.push(i)
+                    }
+                }
+            }
+
+            if (errs.length > 0) {
+                dvTriggerKernelError(`发生内核错误，无法挂载这些文件 ${errs.join(',')}`)
+                return false
+            }
+
+            return true
         }
         //维护 _inode_.name 名称缓存（仅记录 显示名称 !== fid 的节点 ipath）
         const _addNameCache = (name: string, ipath: string): void => {
@@ -684,15 +726,70 @@ export const useDvMemStore = defineStore(
             }
             return rtn
         }
+
+        //判断内存中是否有指定节点的 脏标记缓存
+        const hasInodeModiCache = (ipath: string): boolean => {
+            return modiCache?.[ipath] !== undefined
+        }
+        //节点脏标记缓存 写入|移除
+        //!! 在节点句柄类的 脏标记设置方法中 调用
+        const setInodeModiCache = (ipath: string): boolean => {
+            //节点已被标记为 脏数据
+            if (hasInodeModiCache(ipath)) return true
+            //创建节点脏标记缓存
+            modiCache[ipath] = false
+            return true
+        }
+        const unsetInodeModiCache = (ipath: string): boolean => {
+            //节点未被标记为 脏数据
+            if (!hasInodeModiCache(ipath)) return true
+            //!! 如果节点正在被刷盘，无法移除脏标记
+            //!! 刷盘成功后，会自行移除脏标记
+            if (modiCache[ipath] === true) return false
+            //移除脏标记缓存
+            delete modiCache[ipath]
+            return true
+        }
+        //判断指定节点是否处于 刷盘状态
+        const isInodeModiFsyncing = (ipath: string): boolean => {
+            if (!hasInodeModiCache(ipath)) return false
+            return modiCache?.[ipath] ?? false
+        }
+        //将某个脏标记节点，设为 正在刷盘|未在刷盘 状态
+        const setInodeModiFsyncing = (ipath: string, fsyncing: boolean): boolean => {
+            //此节点必须在 脏标记缓存中
+            if (modiCache?.[ipath] === undefined) return false
+            if (modiCache[ipath] === fsyncing) return true
+            modiCache[ipath] = fsyncing
+            return true
+        }
+        const toggleInodeModiFsyncing = (ipath: string): boolean => {
+            if (modiCache?.[ipath] === undefined) return false
+            modiCache[ipath] = !modiCache[ipath]
+            return true
+        }
+
+        //program 程序运行时的内存结构
+        //!! service 是特殊形式的 program 使用相同的存储结构
+
+        //program 程序运行时内存空间 和 对应 Vue 组件实例
+        //!! 键名是 pid ，程序运行时根据 props 生成的全局唯一的进程 id
+        const program = reactive<Record<string, PlainObject>>({})
+        const programInstance = shallowReactive<Record<string, ComponentPublicInstance>>({})
+
         //根据传入的 program ipath ，获取对应 Vue 组件的 options 定义
         const programMeta = (ipath: string): DvFsProgramMeta | undefined => {
             const inode = addr(ipath)
             if (!inode || !isProgramInode(inode)) return undefined
+            //!! 优先读取 _icache_.meta
+            if (inode._icache_.meta !== undefined) {
+                const meta = inode._icache_.meta as DvFsProgramMeta
+                if (dvIs.nemobj(meta)) return dvCopy(meta)
+            }
+            //没有缓存，则从组件定义中获取
             const extra = inode._inode_.extra as DvFsProgramRegInodeExtra
             const comp = extra?.component
             if (!comp) return undefined
-            //!! DvOs 根组件跳过
-            //if (comp === 'DvOs') return {} as DvFsProgramMeta
             //读取全局组件的 定义
             const define = globalThis.DvApp?.component(comp)
             if (!define) return undefined
@@ -707,39 +804,33 @@ export const useDvMemStore = defineStore(
             if (!def || !def.programMeta) return undefined
             return dvCopy<DvFsProgramMeta>(def.programMeta)
         }
-        //根据传入的 program 文件路径，返回 program 类型数据
-        const programType = (
-            ipath: string,
-        ):
-            | {
-                  ipath: string
-                  itype: 'program' | 'service'
-                  running: boolean
-              }
-            | undefined => {
+        //根据传入的 program 文件路径，返回 program 类型数据 DvFsProgramType
+        const programType = (ipath: string): DvFsProgramType | undefined => {
             //文件节点
             const inode = addr(ipath)
             const meta = programMeta(ipath)
             if (!inode || !isProgramInode(inode) || !meta) return undefined
-            return {
-                ipath: inode._ipath_,
-                itype: meta.isService ? 'service' : 'program',
-                running:
-                    inode._icache_ && inode._icache_.program && dvIs.nemobj(inode._icache_.program),
-            } as {
-                ipath: string
-                itype: 'program' | 'service'
-                running: boolean
-            }
+            const tp: string = [
+                //程序节点是 kernel | sys | user
+                inode._inode_.owner === 'root'
+                    ? meta.service?.type === 'kernel'
+                        ? 'kernel'
+                        : 'sys'
+                    : meta.isSysProgram === true
+                      ? 'sys'
+                      : 'user',
+                //程序节点是 service | program
+                meta.isService === true ? 'service' : 'program',
+            ].join('-')
+            return tp as DvFsProgramType
         }
-
-        //program 程序运行时的内存结构
-        //!! service 是特殊形式的 program 使用相同的存储结构
-
-        //program 程序运行时内存空间 和 对应 Vue 组件实例
-        //!! 键名是 pid ，程序运行时根据 props 生成的全局唯一的进程 id
-        const program = reactive<Record<string, PlainObject>>({})
-        const programInstance = shallowReactive<Record<string, ComponentPublicInstance>>({})
+        //检查传入的 程序节点路径对应的 程序 是否在运行中
+        const programRunning = (ipath: string): boolean => {
+            //文件节点
+            const inode = addr(ipath)
+            if (!inode || !isProgramInode(inode)) return false
+            return inode._icache_ && inode._icache_.program && dvIs.nemobj(inode._icache_.program)
+        }
         //在 program 指向的组件内部，访问自有的内存空间
         const getProgramMem = <T extends PlainObject>(pid: string): T | undefined => {
             //按 pid 获取对应的内存数据，响应式
@@ -796,14 +887,22 @@ export const useDvMemStore = defineStore(
                 //已存在，直接返回原有的 pid
                 return pid
             }
-            // 2 pid 不存在，开始执行 程序运行时内存初始化
+            // !!2  pid 不存在，如果是单例程序，检查是否已有进程实例
+            const type = programType(ipath)
+            const running = programRunning(ipath)
+            if ((type?.endsWith('-service') || meta.isMultiple === false) && running === true) {
+                //!! 返回已有的进程 pid
+                const pids = getPidsByIpath(ipath)
+                return pids[0]
+            }
+            // 3 pid 不存在，且不是单例程序，开始执行 程序运行时内存初始化
             const memok = await createProgramMem<T>(pid, memInit)
             if (!memok) {
                 //!! 报 内核错误
                 dvTriggerKernelError(`发生内核错误，启动 ${meta?.title ?? ipath} 时无法初始化内存`)
                 return undefined
             }
-            // 3 修改 program 内存节点数据
+            // 4 修改 program 内存节点数据
             const inode = addr(ipath)
             //!! 能正确生成 pid 则不可能 !inode
             if (!inode) return undefined
@@ -906,7 +1005,8 @@ export const useDvMemStore = defineStore(
                     ipath,
                     name: meta.name,
                     meta,
-                    props: pcache.props,
+                    //!! 用于 vue 组件实例化的 props 中必须插入 pid
+                    props: dvExtend(false, {}, pcache.props ?? {}, { pid }),
                 })
             }
             return items
@@ -924,8 +1024,27 @@ export const useDvMemStore = defineStore(
             return wins
         })
 
+        //特殊节点
+        //读取 /sys/config 系统配置
+        //!! 用户登录后，存在 /user/config 节点，则需要合并覆盖 生成最终系统配置数据
+        //!! 输出 非响应式 数据
+        const sysConfig = (): DvConfigDefine | undefined => {
+            const conf = addr('/sys/config')
+            if (!conf || !isInode(conf) || !conf._icache_.content) return undefined
+            let rtn: DvConfigDefine = dvCopy((conf._icache_.content as DvConfigDefine) ?? {})
+            const uconf = addr('/user/config')
+            if (!uconf || !isInode(uconf) || !uconf._icache_.content) return rtn
+            //合并用户配置
+            return dvExtend(
+                false,
+                rtn,
+                (uconf._icache_.content as DvConfigDefine) ?? {},
+            ) as DvConfigDefine
+        }
+
         return {
             fs: _fs,
+            modiCache: _modiCache,
 
             isInode,
             isProgramInode,
@@ -933,6 +1052,7 @@ export const useDvMemStore = defineStore(
             nameExistsInInode,
             checkFidExistsWhenCreateInInode,
 
+            inodeFids,
             addr,
             addrInInode,
             addrInProgram,
@@ -943,6 +1063,7 @@ export const useDvMemStore = defineStore(
             existsInInode,
             create,
             createInInode,
+            mountInInode,
             rename,
             unlink,
             unlinkInInode,
@@ -950,11 +1071,19 @@ export const useDvMemStore = defineStore(
 
             realIpath,
             inodeType,
-            programType,
-            programMeta,
+
+            hasInodeModiCache,
+            setInodeModiCache,
+            unsetInodeModiCache,
+            isInodeModiFsyncing,
+            setInodeModiFsyncing,
+            toggleInodeModiFsyncing,
 
             program,
             programInstance,
+            programType,
+            programMeta,
+            programRunning,
             getProgramMem,
             createProgramMem,
             releaseProgramMem,
@@ -966,6 +1095,8 @@ export const useDvMemStore = defineStore(
 
             pidItems,
             winItems,
+
+            sysConfig,
         }
     },
     {

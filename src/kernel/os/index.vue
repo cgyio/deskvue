@@ -14,21 +14,44 @@
  *      !! 后续内核启动步骤转到此组件内部
  *
  */
-import { ref, computed, onMounted, onUnmounted, nextTick, provide, type ShallowRef } from 'vue'
-import { useDvProgramHook, type DvProgramComponentProps } from '../utils'
+import {
+    ref,
+    computed,
+    watch,
+    onMounted,
+    onUnmounted,
+    nextTick,
+    provide,
+    type ComputedRef,
+    type ShallowRef,
+} from 'vue'
+import {
+    useDvProgram,
+    type DvProgramComponentProps,
+    useDvFlusher,
+    useDvIoBuffer,
+    useDvServiceWatcher,
+    useDvInstaller,
+    useDvOsProvider,
+} from './utils'
 import type {
     DvDirInode,
     DvFsInodeCreateOptions,
+    DvFsInodeMemStruct,
+    DvFsLsItem,
     DvFsMemStruct,
     DvFsProgramMeta,
+    DvInodeHandler,
+    DvProcess,
     DvProgramRegInode,
     DvRegInode,
 } from '../fs'
 import { useDvFsIpath } from '../fs'
-import { DV_OS_PROVIDE } from './types'
+import { DV_OS_PROVIDE, type DvOsProvide } from './types'
 import { dvTriggerKernelError, DvKernelError } from '../error'
-import { useDvDarkHook } from './hooks'
-import { dvIs, dvExtend, dvWait } from '@utils/core'
+import { dvIs, dvExtend, dvWait, dvDateStr } from '@utils/core'
+import DvKernelUi from './modules/dv-kernel-ui.vue'
+import DvTerminal from './service/dv-cli/modules/dv-terminal.vue'
 
 defineOptions({
     name: 'DvOs',
@@ -51,271 +74,71 @@ export interface DvOsProps extends DvProgramComponentProps {
 const props = withDefaults(defineProps<DvOsProps>(), {})
 
 //hook
-const dvProgram = useDvProgramHook(() => props)
-const { pid, ipath, inode, handler, callCtx, memory, sysCall } = dvProgram
-const { isDark, toggleDark } = useDvDarkHook()
-//程序私有内存
-const mem = memory.value
+//const ipu = useDvFsIpath()
+//程序基础 hook
+const dvProgram = useDvProgram(() => props)
+const { ioBuffer, sysConfig, userSession } = dvProgram
+//刷盘调度器
+const dvFlusher = useDvFlusher(() => dvProgram)
+const { startIntervalFlush, stopIntervalFlush } = dvFlusher
+//输出缓冲区
+const { print: ioPrint, printExtend: ioPrintExtend } = useDvIoBuffer(() => dvProgram)
+//系统服务守卫
+const dvSrvWatcher = useDvServiceWatcher(() => dvProgram)
+const {
+    services,
+    serviceAutoStartSequence,
+    createKernelServiceInodes,
+    createServiceInodes,
+    autoStartServices,
+} = dvSrvWatcher
+//程序安装器
+const dvInstaller = useDvInstaller(() => dvProgram)
+const { createProgramInodes, installUserProgram } = dvInstaller
 
 //DvKernel.stage
-const { stage, errors, prints } = globalThis.DvKernel
-//内核启动阶段的字符输出内容
-const printHtml = computed<string>(() => {
-    const html: string[] = [
-        '<div class="dv-kernel-logo">',
-        '<img src="',
-        `https://ms.systech.work/src/icon/deskvue-logo-expand${isDark.value ? '-dark' : ''}.svg" `,
-        'style="height: 64px;width: auto;">',
-        '</div>',
-    ]
-    for (const s of prints.value) {
-        let cls: string[] = []
-        let lbl: string = ''
-        let str: string = s
-
-        //截取 class
-        if (str.startsWith('[.') && str.includes(']')) {
-            const sa = str.slice(2).split(']')
-            if (sa.length < 2 || !sa[0] || !sa[1]) continue
-            cls = sa[0].split('.')
-            str = sa[1]
-        }
-        //截取 label
-        if (str.includes('：')) {
-            const sa = str.split('：')
-            if (sa.length < 1 || !sa[0]) continue
-            lbl = sa[0] + '：'
-            str = sa.slice(1).join('：')
-        }
-
-        const h: string[] = ['<div']
-        if (cls.length > 0) {
-            h.push(` class="${cls.join(' ')}">`)
-        } else {
-            h.push('>')
-        }
-        if (lbl !== '')
-            h.push(`<span class="dv-kernel-label">${lbl}</span><span class="dv-flex-1">`)
-        h.push(str)
-        if (lbl !== '') h.push('</span>')
-        h.push('</div>')
-
-        html.push(h.join(''))
-    }
-    //光标
-    html.push('<div class="dv-kernel-cursor"></div>')
-    html.push('<div></div>')
-    return html.join('')
-})
+const { stage, errors, options } = globalThis.DvKernel
 
 //!! 承接 kernel.start 方法，继续内核启动流程
 //!! 在 onMounted 内部执行，统一包裹在 try-catch 中，出错报内核错误
-//  5   os-mounting：DvOs 根组件挂载，创建 FS 根目录结构
+//  5   os-mounting：DvOs 根组件挂载，挂载 内核服务，已收集到的 系统|用户 程序|服务
+//      服务全部注册到 services，出错抛内核错误
 const osMounting = async (): Promise<void> => {
-    const baseDir = sysCall('fs:open', '/') as DvDirInode
-    const sysDir = sysCall('fs:open', '/sys') as DvDirInode
-    if (!baseDir || !sysDir) {
-        throw new DvKernelError('发生内核错误，未找到系统根目录')
-    }
-    //创建系统目录结构
-    const srvDir = await sysDir.mkdir('service', { owner: 'root' }, callCtx.value)
-    if (srvDir) prints.value.push(`系统目录已创建：/sys/service`)
-    const prgDir = await baseDir.mkdir('program', { owner: 'root' }, callCtx.value)
-    if (prgDir) prints.value.push(`系统目录已创建：/program`)
-    const sds = 'user,dev,mnt,run'.split(',')
-    const cderr: string[] = []
-    for (const k of sds) {
-        const hdl = await baseDir.mkdir(k, { owner: 'root' }, callCtx.value)
-        if (!hdl) {
-            cderr.push(k)
-        } else {
-            prints.value.push(`系统目录已创建：/${k}`)
-        }
-    }
-    if (!srvDir || !prgDir || cderr.length > 0) {
-        if (!srvDir) cderr.push('sys/service')
-        if (!prgDir) cderr.push('program')
-        throw new DvKernelError(`发生内核错误，无法创建系统目录结构 ${cderr.join(',')}`)
-    }
+    //ioBuffer
+    await ioPrint('Deskvue Kernel starting', { isKernel: true })
+    await ioPrint('')
+    await ioPrint('VFS initing<{{tab x4}}>', { isKernel: true })
+    await dvWait(300)
+    await ioPrintExtend('<{{.green::<OK>}}>', { appendTs: true })
+    await ioPrint('OS initing<{{tab x4}}>', { isKernel: true })
+    await dvWait(300)
+    await ioPrintExtend('<{{.green::<OK>}}>', { appendTs: true })
+    await ioPrint('OS mounting<{{tab x4}}>', { isKernel: true })
+    //挂载 内核服务
+    await createKernelServiceInodes()
+    stage.updateStageProgressInQueue(30, 3, 0)
+    //挂载 已收集到的 系统|用户 服务
+    await createServiceInodes()
+    stage.updateStageProgressInQueue(30, 3, 1)
+    //挂载 已收集到的 系统|用户 程序
+    await createProgramInodes()
+    stage.updateStageProgressInQueue(30, 3, 2)
+    await ioPrintExtend('<{{.success::<OK>}}>', { appendTs: true })
 
-    //未能成功挂载的程序、服务、系统文件 名称
-    const errs: string[] = []
-
-    //开始挂载程序节点
-    const progs = globalThis.DvApp.config.globalProperties.$programs ?? {}
-    //将标记为 service 的组件，挂载到 /sys/service 下
-    const srvs = {
-        sys: progs?.sys?.services ?? {},
-        lib: progs?.lib?.services ?? {},
-    }
-    //将标记为 program 的组件，挂载到 /program 下
-    const prgs = {
-        sys: progs?.sys?.programs ?? {},
-        lib: progs?.lib?.programs ?? {},
-    }
-    //系统程序和服务，必须存在
-    if (!(srvs.sys && dvIs.nemobj(srvs.sys)) || !(prgs.sys && dvIs.nemobj(prgs.sys))) {
-        throw new DvKernelError('发生内核错误，未发现任何系统服务程序')
-    }
-
-    //程序节点挂载方法
-    const mnt = async (
-        handler: DvDirInode,
-        pgs: Record<string, DvFsProgramMeta>,
-        opts?: Partial<DvFsInodeCreateOptions>,
-    ): Promise<void> => {
-        if (!pgs || !dvIs.nemobj(pgs)) return
-        opts = dvExtend(
-            false,
-            {
-                mode: 'reg',
-                type: 'program',
-            },
-            opts,
-        )
-        for (const k in pgs) {
-            const srvMeta = pgs?.[k] as DvFsProgramMeta
-            if (!srvMeta || !srvMeta.name) {
-                errs.push(srvMeta.name ?? k)
-                continue
-            }
-            //创建程序节点
-            const opti = dvExtend(
-                false,
-                {
-                    inode: {
-                        //程序节点每次启动时重建，不需要记录时间戳
-                        time: { a: 0, c: 0, m: 0, d: 0 },
-                        name: srvMeta.title ?? srvMeta.name,
-                        extra: {
-                            component: srvMeta.name,
-                        },
-                    },
-                },
-                opts,
-            )
-            const hdl = await handler.create(srvMeta.name, opti, callCtx.value)
-            if (!hdl) {
-                errs.push(srvMeta.name)
-                continue
-            } else {
-                //print
-                const issrv = srvMeta.isService ?? false
-                prints.value.push(
-                    `${issrv ? '服务' : '程序'}已安装：${issrv ? '/sys/service' : '/program'}/${srvMeta.name}`,
-                )
-            }
-        }
-    }
-
-    //挂载系统服务程序
-    await mnt(srvDir, srvs.sys, {
-        auth: 101,
-        owner: 'root',
-    })
-    await mnt(prgDir, prgs.sys, {
-        auth: 101,
-        owner: 'user',
-    })
-    //挂载业务服务程序
-    if (srvs.lib && dvIs.nemobj(srvs.lib)) {
-        await mnt(srvDir, srvs.lib, {
-            auth: 111,
-            owner: 'user',
-        })
-    }
-    if (prgs.lib && dvIs.nemobj(prgs.lib)) {
-        await mnt(prgDir, prgs.lib, {
-            auth: 111,
-            owner: 'user',
-        })
-    }
-
-    //创建 /sys/config|update 系统文件
-    const sysfs: PlainObject = {
-        config: '*.conf',
-        update: '*.upd',
-    }
-    for (const k in sysfs) {
-        const ext = sysfs?.[k]
-        if (!ext) {
-            errs.push(`sys/${k}`)
-            continue
-        }
-        const hdl = await sysDir.create(
-            k,
-            {
-                mode: 'reg',
-                type: 'ext',
-                auth: 101,
-                owner: 'root',
-                inode: {
-                    time: { a: 0, c: 0, m: 0, d: 0 },
-                    extra: {
-                        mime: ext,
-                    },
-                },
-            },
-            callCtx.value,
-        )
-        if (!hdl) {
-            errs.push(`sys/${k}`)
-            continue
-        } else {
-            //print
-            prints.value.push(`系统文件已创建：${ext}：/sys/${k}`)
-        }
-
-        //TODO：从 dvHdd 读取持久化的 config|update 内容，填充到 inode._icache_.content
-        //下一阶段拉起系统服务时，可能需要读取配置参数
-        //...
-    }
-
-    //存在错误
-    if (errs.length > 0) {
-        throw new DvKernelError(
-            `发生内核错误，有服务、程序、系统文件未能正确挂载：${errs.join(',')}`,
-        )
-    }
+    //!! 删除 globalProperties.$programs
+    delete globalThis.DvApp.config.globalProperties.$programs
 
     //内核状态 os-mounting -> fs-ready
     stage.stageNext()
     await dvWait(10)
 }
-//  6   fs-ready：开始批量拉起 owner = root 的内核服务程序
+//  6   fs-ready：开始批量拉起 serviceInfo.autoStart == true 的服务程序
 const fsReady = async (): Promise<void> => {
-    const srvDir = sysCall('fs:open', '/sys/service') as DvDirInode
-    if (!srvDir) {
-        throw new DvKernelError('发生内核错误，未找到系统服务目录')
-    }
-    //节点数据
-    const srvInode = srvDir.inode
-    const ipu = useDvFsIpath()
-    const srvs = Object.keys(srvInode).filter((i: string) => {
-        if (ipu.isFid(i) !== true) return false
-        const inode = srvInode[i] as DvFsMemStruct
-        if (!inode) return false
-        return inode._inode_.owner === 'root'
-    })
-    if (srvs.length <= 0) {
-        throw new DvKernelError('发生内核错误，未找到任何系统服务程序')
-    }
-    //批量拉起
-    const pids: Record<string, string> = {}
-    const errs: string[] = []
-    for (const k of srvs) {
-        const pid = await sysCall('fs:exec', `/sys/service/${k}`)
-        if (!pid) {
-            errs.push(k)
-            continue
-        }
-        pids[k] = pid
-    }
-
-    //存在错误
-    if (errs.length > 0) {
-        throw new DvKernelError(`发生内核错误，有系统服务未能正确启动：${errs.join(',')}`)
-    }
+    await ioPrint('Service starting<{{tab x3}}>', { isKernel: true })
+    //读取服务注册表 services 批量拉起 serviceInfo.autoStart == true 的服务程序
+    await autoStartServices()
+    stage.setStageProgress(45)
+    await ioPrintExtend('<{{.green::<OK>}}>', { appendTs: true })
 
     //内核状态 fs-ready -> service-ready
     stage.stageNext()
@@ -332,23 +155,41 @@ const serviceReady = async (): Promise<void> => {
 
 //onMounted
 onMounted(async () => {
+    await nextTick()
+
     //继续内核启动流程
     //os-mounting --> os-ready 阶段
     try {
         await osMounting()
-        //await fsReady()
+        await fsReady()
         //await serviceReady()
+
+        //!! panic 测试，蓝屏
+        //throw new DvKernelError('手动模拟内核崩溃', { level: 'PANIC' })
     } catch (e: any) {
         //os-mounting --> os-ready 阶段发生错误，一律内核 panic
         dvTriggerKernelError(e, 'PANIC')
     }
 })
 
+//provide 向子组件暴露
+const { isDark, toggleDark, logo } = useDvOsProvider(() => dvProgram)
 provide(DV_OS_PROVIDE, {
     stage: stage.stage,
+    stageHook: stage,
+
+    services,
+    serviceSequence: serviceAutoStartSequence,
+    serviceWatcher: dvSrvWatcher,
+    install: installUserProgram,
+
+    ioBuffer,
+    sysConfig,
+    userSession,
 
     isDark,
     toggleDark,
+    logo,
 })
 
 //定义根组件实例类型
@@ -360,5 +201,23 @@ defineExpose<DvOsExposed>({
 })
 </script>
 <template>
-    <div v-if="stage.stageBefore('os-ready')" class="dv-kernel" v-html="printHtml"></div>
+    <!-- 启动阶段显示 -->
+    <DvKernelUi v-if="stage.stageBefore('ready')" height="30vh">
+        <DvTerminal v-if="stage.stageBefore('login-start')"></DvTerminal>
+    </DvKernelUi>
+    <!-- service-ready 挂载 服务组件 -->
+    <template v-if="stage.stageAfter('service-ready', true)">
+        <template v-for="(srvi, srvn) of services" :key="`deskvue_service_${srvn}`">
+            <component
+                v-if="dvSrvWatcher.isServiceRunning(srvi.ipath)"
+                :is="srvi.name"
+                :pid="srvi.pid"
+                v-bind="srvi.props"
+            ></component>
+        </template>
+    </template>
+    <!-- panic 蓝屏-->
+    <div v-if="stage.stageIs('kernel-panic-error')" class="dv-panic">
+        {{ stage.stageErrorMsg.value }}
+    </div>
 </template>

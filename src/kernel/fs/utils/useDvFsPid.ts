@@ -6,7 +6,7 @@
 
 import { useDvMemStore } from '../stores'
 import type { DvFsMemStruct } from '../types'
-import { dvKabab } from '@utils/core'
+import { dvIs, dvKabab } from '@utils/core'
 import { md5 } from 'js-md5'
 
 export const useDvFsPid = () => {
@@ -19,11 +19,17 @@ export const useDvFsPid = () => {
         const meta = dvMem.programMeta(ipath)
         if (!meta) return undefined
         //组装 pid
+        //!! pid 一定以 prog_ 开头
         const pida: string[] = ['prog']
         //组件名
         pida.push(meta.name)
         //组件 props MD5
-        pida.push(md5(JSON.stringify(props ?? {})))
+        if (!props || !dvIs.nemobj(props)) props = {}
+        //!! props 中不能包含 pid 参数
+        if (props?.pid !== undefined) {
+            delete props.pid
+        }
+        pida.push(md5(JSON.stringify(props)))
         //返回 pid
         return pida.join('_')
     }

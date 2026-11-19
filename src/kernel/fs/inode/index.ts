@@ -21,7 +21,7 @@ import { DvLnkInode } from './dv-lnk'
 //import { DvBlkInode } from './dv-blk'
 //import { DvSockInode } from './dv-sock'
 
-//import { DvMimeRegInode } from './dv-mime-reg'
+import { DvMimeRegInode } from './dv-mime-reg'
 import { DvProgramRegInode } from './dv-program-reg'
 //import { DvModelRegInode } from './dv-model-reg'
 import { DvExtRegInode } from './dv-ext-reg'
@@ -44,7 +44,7 @@ export const dvInodeHandlers = {
     //DvBlkInode,
     //DvSockInode,
 
-    //DvMimeRegInode,
+    DvMimeRegInode,
     DvProgramRegInode,
     //DvModelRegInode,
     DvExtRegInode,
@@ -146,7 +146,7 @@ export type * from './dv-lnk'
 //export type * from './dv-chr'
 //export type * from './dv-blk'
 //export type * from './dv-sock'
-//export type * from './dv-mime-reg'
+export type * from './dv-mime-reg'
 export type * from './dv-program-reg'
 //export type * from './dv-model-reg'
 export type * from './dv-ext-reg'

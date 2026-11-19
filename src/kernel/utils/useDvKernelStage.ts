@@ -4,7 +4,7 @@
  */
 
 import { ref, computed } from 'vue'
-import { useDvStage } from '@/utils'
+import { useDvStage, dvIs } from '@/utils'
 import { DvKernelError } from '../error'
 
 //定义 Deskvue 内核的 启动状态序列
@@ -17,9 +17,9 @@ const dvKernelStages = [
     'os-start',
 
     //FS 文件系统初始化开始
-    //  pinia 初始化，在内存(dvMem)中 创建 /sys 系统文件目录
-    //  在 /sys 目录下创建 prog0 程序节点
-    //      /sys/prog0 程序模拟 0 号进程，后续所有对系统文件的读写，通过此程序
+    //  pinia 初始化
+    //  在从 dvHdd 磁盘中读取文件系统目录结构，挂载到 dvMem 内存文件树
+    //  启动 /sys/prog0 跟程序(0 号进程)，后续所有对系统文件的读写，通过此程序
     //      /sys/prog0 程序指向 Vue 根组件 DvOs
     //      !! 手动启动 /sys/prog0 进程（创建 pid ，挂载 program[pid] | pidCache[pid]）
     //      !! 手动修改 prog0Node._icache_{ handler, meta, program[pid] }
@@ -27,6 +27,7 @@ const dvKernelStages = [
     'fs-initing',
 
     //Vue plugin install 以及 业务库注册
+    //  执行 kernel-service 组件全局注册，按顺序收集到 globalProperties.$service
     //  执行 Vue plugin.install 注册所有全局组件，注册所有 v-* 全局指令，注册全局方法
     //  读取启动参数中的 options.lib 加载所有外部的业务组件库，注册业务库的全局组件
     //  扫描全局组件，筛选 program | service 类型组件
@@ -38,21 +39,7 @@ const dvKernelStages = [
     //  !! 内核启动阶段推进 转移到 DvOs 组件内部
     //  DvOs 组件 onMounted 中：
     //      将组件实例添加到 programInstance[pid]
-    //      !! prog0.sysCall(...) 创建根目录路径：
-    //          const sysDir = sysCall('fs:open', '/sys')
-    //          sysDir.create('service | config | update | session', ...)
-    //          sysDir.release()
-    //          const baseDir = sysCall('fs:open', '/')
-    //          baseDir.create('program | user | dev | mnt | run', ...)
-    //          baseDir.release()
-    //          const servDir = sysCall.open('fs:open', '/sys/service')
-    //          servDir.create('service 程序列表')
-    //          servDir.release()
-    //          const progDir = sysCall.open('fs:open', '/program')
-    //          progDir.create('program 程序列表')
-    //          progDir.release()
-    //          delete DvApp.config.globalProperties.$program
-    //          DvKernel.stage.stageNext()
+    //      !! prog0.sysCall(...) 创建 系统|用户 的 服务|程序 节点
     'os-mounting',
 
     //FS 文件系统初始化完成，文件系统就绪
@@ -60,10 +47,10 @@ const dvKernelStages = [
     //      !! 此时用户还未登录，因此只有 root用户 + 系统程序 可以通过权鉴
     //  /sys/prog0 进程内部开始批量拉起 owner = root 的内核服务程序：
     //
-    //      sysCall('service:start', '/sys/service/DvCliService')
-    //      sysCall('service:start', '/sys/service/DvGuiService')
-    //      sysCall('service:start', '/sys/service/DvWinService')
-    //      sysCall('service:start', '/sys/service/DvUacService')
+    //      sysCall('fs:exec', '/sys/service/DvCliService')
+    //      sysCall('fs:exec', '/sys/service/DvGuiService')
+    //      sysCall('fs:exec', '/sys/service/DvWinService')
+    //      sysCall('fs:exec', '/sys/service/DvUacService')
     //      ...
     //
     //      ... GUI 服务启动，开始监听 pidItems | winItems 进程列表
@@ -77,6 +64,9 @@ const dvKernelStages = [
     //  ...
     //  DvKernel.stage.stageNext()
     'service-ready',
+
+    //内核态发生 panic 级别错误，DvOs 显示蓝屏
+    'kernel-panic-error',
 
     //内核启动完成，开始进入用户态
     //  !! 此状态之前如果发生错误，都属于内核错误，panic
@@ -160,6 +150,7 @@ const dvKernelStageTitles: Record<DvKernelStage, string> = {
     'os-mounting': '构建目录与程序',
     'fs-ready': '文件系统就绪',
     'service-ready': '系统服务就绪',
+    'kernel-panic-error': '内核崩溃',
     'os-ready': '系统就绪',
     'login-start': '用户登录',
     'login-error': '登录失败',
@@ -167,6 +158,21 @@ const dvKernelStageTitles: Record<DvKernelStage, string> = {
     'user-error': '用户数据加载失败',
     'is-login': '用户已登录',
     ready: '就绪',
+}
+//各 *-error 错误阶段的 icon 和 msg
+const dvKernelErrorStageGuis: Record<string, { icon: string; msg: string }> = {
+    'kernel-panic-error': {
+        icon: '',
+        msg: 'Deskvue 内核崩溃',
+    },
+    'login-error': {
+        icon: 'md-round-sentiment-very-dissatisfied',
+        msg: '登录失败，无法进入系统',
+    },
+    'user-error': {
+        icon: 'md-round-report-gmailerrorred',
+        msg: '无法加载用户数据，无法进入系统',
+    },
 }
 
 //定义状态机
@@ -189,17 +195,15 @@ export const useDvKernelStage = () => {
     const stageErrorIcon = ref<string>('md-round-report-gmailerrorred')
     //当 stage 跳转到 *-error 时，显示的错误信息
     const stageErrorMsg = ref<string>('')
-    //user-initing 跳转到 user-error
-    const stageToError = (msg: string): void => {
-        if (msg.includes('::')) {
-            const msga: string[] = msg.split('::')
-            if (msga[0]) stageErrorIcon.value = msga[0]
-            if (msga[1]) stageErrorMsg.value = msga[1]
-        } else {
-            stageErrorIcon.value = 'md-round-report-gmailerrorred'
-            stageErrorMsg.value = msg
-        }
-        hook.stageTo('user-error')
+    //任意状态 跳转到 *-error
+    const stageToError = (to: DvKernelStage, msg: string): void => {
+        if (!to.endsWith('-error')) return
+        const gui = dvKernelErrorStageGuis?.[to] ?? { icon: 'md-round-close', msg: 'Unknown Error' }
+        const msga: string[] = msg.split('::')
+
+        stageErrorIcon.value = msga[0] && dvIs.nemstr(msga[0]) ? msga[0] : gui.icon
+        stageErrorMsg.value = msga[1] && dvIs.nemstr(msga[1]) ? msga[1] : gui.msg
+        hook.stageTo(to)
     }
 
     //更具体的 stage 判断，用于快速判断，以及在 DvOs 组件内显示相应的界面
@@ -223,28 +227,28 @@ export const useDvKernelStage = () => {
     })
 
     //启动阶段进度条进度值
-    const startProgress = ref<number>(0)
-    const setStartProgress = (to: number): void => {
+    const stageProgress = ref<number>(0)
+    const setStageProgress = (to: number): void => {
         const n = to < 0 ? 0 : to > 100 ? 100 : to
-        startProgress.value = n
+        stageProgress.value = n
     }
     //进度增加
-    const updateStartProgress = (n: number): void => {
-        const np = startProgress.value + n
-        startProgress.value = np > 100 ? 100 : np < 0 ? 0 : np
+    const updateStageProgress = (n: number): void => {
+        const np = stageProgress.value + n
+        stageProgress.value = np > 100 ? 100 : np < 0 ? 0 : np
     }
     //进度递增
-    const updateStartProgressInQueue = (
+    const updateStageProgressInQueue = (
         to: number, //进度增加到
         length: number, //一共要增加几次
         cidx: number = 0, //当前已经增加到第几次，从 0 开始
     ): void => {
-        const op = startProgress.value
+        const op = stageProgress.value
         const len = length - cidx - 1
         if (len <= 0) return
         //每次增加值
         const dv = (to - op) / len
-        return updateStartProgress(dv)
+        return updateStageProgress(dv)
     }
 
     return {
@@ -261,14 +265,12 @@ export const useDvKernelStage = () => {
         isDesktopStage,
         isLoginStage,
 
-        startProgress,
-        setStartProgress,
-        updateStartProgress,
-        updateStartProgressInQueue,
+        stageProgress,
+        setStageProgress,
+        updateStageProgress,
+        updateStageProgressInQueue,
     }
 }
 
 //stage 工具类型
 export type DvKernelStageHook = ReturnType<typeof useDvKernelStage>
-
-//内核启动 各 stage 阶段执行方法

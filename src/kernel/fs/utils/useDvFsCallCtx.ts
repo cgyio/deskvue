@@ -192,11 +192,19 @@ export const useDvFsCallCtx = () => {
         return true
     }
 
+    //从 dvMem.fs.sys.session 中读取当前登录用户的 uSign
+    //!! 只能在 is-login 之后读取，否则返回 undefined
+    const uSign = (): string | undefined => {
+        if (globalThis.DvKernel.stage.stageBefore('is-login')) return undefined
+        return useDvMemStore().addrSession()?._icache_.uSign
+    }
+
     //解析 callCtx 得到对应的 pidCache
     //const parseCallCtx = (callCtx: DvFsCallContext):
 
     return {
         create,
         isCallCtx,
+        uSign,
     }
 }

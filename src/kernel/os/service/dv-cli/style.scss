@@ -1,0 +1,144 @@
+@use '../../../../styles/common.scss' as *;
+
+//闪烁
+@keyframes dv_buffer_cursor {
+    0% {
+        opacity: 0;
+    }
+    20% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 1;
+    }
+    70% {
+        opacity: 0;
+    }
+    100% {
+        opacity: 0;
+    }
+}
+
+/* DvTerminal */
+.dv-terminal {
+    --dv-term-fsz: 14px;
+
+    @include base-elm($w: 100%, $h: 100%, $pd: var(--dv-term-fsz), $ov: hidden auto);
+    //背景色 跟随系统
+    background-color: var(--dv-color-bg);
+    color: var(--dv-color-text-regular);
+    font-size: var(--dv-term-fsz);
+    font-family: var(--dv-font-family-code);
+
+    //buffer-row
+    & > .dv-buffer-row {
+        @include base-elm;
+        //width: 100%;
+        min-height: calc(var(--dv-term-fsz) + 4px);
+        @include flex-x;
+        flex-wrap: wrap;
+        line-height: calc(var(--dv-term-fsz) + 2px);
+        //transition: all var(--dv-ani-trans-fast);
+
+        //buffer-cell
+        & > .dv-buffer-cell {
+            min-height: calc(var(--dv-term-fsz) + 4px);
+            @include flex-x;
+            flex-shrink: 0;
+
+            //strong
+            &.strong {
+                font-weight: bold;
+                color: var(--dv-color-black);
+            }
+
+            //选中
+            &.selected {
+                background-color: var(--dv-color-text-regular);
+                color: var(--dv-color-bg);
+            }
+
+            //尾部插入
+            &.at-tail {
+                flex: 1;
+                justify-content: flex-end;
+            }
+
+            //cursor 闪烁光标
+            &.cursor {
+                min-width: calc(var(--dv-term-fsz) * 0.5);
+                min-height: var(--dv-term-fsz);
+                margin-top: 2px;
+                background-color: var(--dv-color-text-regular);
+                //!! 必须指定 animation-duration，只写 animation-name 时默认 0s，动画无效
+                animation: dv_buffer_cursor 1s steps(1, end) infinite;
+            }
+
+            //颜色
+            @each $c in $tw-color-all-names {
+                $cln: color-name($c);
+                $clr: get-color($c);
+
+                &.#{$cln} {
+                    color: #{$clr};
+                    &.selected {
+                        background-color: #{$clr};
+                        color: var(--dv-color-bg);
+                    }
+                }
+                &.bg-#{$cln} {
+                    background-color: #{$clr};
+                    color: var(--dv-color-bg);
+                    &.selected {
+                        background-color: var(--dv-color-bg);
+                        color: #{$clr};
+                    }
+                }
+            }
+
+            //透明度
+            @for $o from 1 through 10 {
+                $opa: $o * 0.1;
+                &.opa-#{$o} {
+                    opacity: #{$opa};
+                }
+            }
+        }
+
+        &:hover {
+            background-color: var(--dv-color-text-regular);
+            color: var(--dv-color-bg);
+
+            & > .strong {
+                background-color: var(--dv-color-black);
+            }
+
+            & > .selected {
+                background-color: var(--dv-color-bg);
+                color: var(--dv-color-text-regular);
+            }
+
+            @each $c in $tw-color-all-names {
+                $cln: color-name($c);
+                $clr: get-color($c);
+
+                & > .#{$cln} {
+                    background-color: #{$clr};
+                    color: var(--dv-color-bg);
+                    &.selected {
+                        color: #{$clr};
+                        background-color: var(--dv-color-bg);
+                    }
+                }
+                & > .bg-#{$cln} {
+                    color: #{$clr};
+                    background-color: var(--dv-color-bg);
+                    &.selected {
+                        background-color: #{$clr};
+                        color: var(--dv-color-bg);
+                    }
+                }
+            }
+        }
+    }
+}

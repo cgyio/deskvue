@@ -4,8 +4,7 @@
  * 系统程序
  */
 import { ref, computed } from 'vue'
-import type { DvFsProgramMeta } from '@/kernel'
-import { useDvProgramHook } from '@/kernel'
+import { useDvProgram, type DvFsProgramMeta } from '@/kernel'
 
 defineOptions({
     name: 'DvDesktop',

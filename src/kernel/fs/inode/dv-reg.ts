@@ -14,7 +14,13 @@
  */
 
 import { DvInode } from './dv-inode'
-import { type DvFsInodeAuth, type DvFsCallContext, type DvFsHddStruct } from '../types'
+import {
+    type DvFsInodeAuth,
+    type DvFsCallContext,
+    type DvFsHddStruct,
+    type DvFsRegInodeReadOptions,
+    type DvFsRegInodeWriteOptions,
+} from '../types'
 import { useDvFsAc, type DvFsAcHook, type DvFsAcFn } from '../utils'
 import { useDvHddStore, type DvHddStore } from '../stores'
 import { dvIs, dvWait } from '@utils/core'
@@ -45,27 +51,52 @@ export class DvRegInode extends DvInode {
     }
 
     //读取：纯文本文件，内容保存在 dvHdd.[this.ipath]._content_ 中
-    override async read(callCtx?: DvFsCallContext): Promise<string> {
+    override async read(
+        opts?: DvFsRegInodeReadOptions,
+        callCtx?: DvFsCallContext,
+    ): Promise<string> {
+        //直接复用同步 read
+        //!! reg 节点默认纯文本文件，可以同步读
+        return this.readSync(opts, callCtx)
+    }
+    //!! 增加一个 同步 read，针对普通的静态文件
+    //!! 方便外部组件内 computed 获取文件内容
+    readSync(opts?: DvFsRegInodeReadOptions, callCtx?: DvFsCallContext): string {
         //读取需要 读 权限
         if (!this.ac('read', callCtx)) return this._acDenied('read')
+        //纯文本内容
+        let content: string = ''
+
         //先检查 脏标记
         if (this.inode._inode_.modi === 1) {
             //!! 优先从 缓存读取，注意 content 可能是空字符串 ''，不能用真值判断
             const cached = this.inode._icache_?.content
-            if (dvIs.string(cached)) return cached
+            if (!dvIs.string(cached)) return ''
+            content = cached
         }
+
         //从 dvHdd 读文件内容
-        const dvHdd = useDvHddStore()
-        const fnode = dvHdd.addr(this.ipath)
-        if (!fnode || !fnode._content_) return this._krError(`文件 ${this.ipath} 不存在`)
-        return fnode._content_ as string
+        else {
+            const dvHdd = useDvHddStore()
+            const fnode = dvHdd.addr(this.ipath)
+            if (!fnode || !fnode._content_) return this._krError(`文件 ${this.ipath} 不存在`)
+            if (typeof fnode._content_ !== 'string') return ''
+            content = fnode._content_
+        }
+
+        //根据额外参数，输出
+        if (content === '') return ''
+        //输出指定长度
+        if (opts?.size !== undefined && opts.size > 0) return content.slice(0, opts.size)
+        //默认
+        return content
     }
 
     //写入：纯文本文件，内容写入 _icache_.content 在刷盘时，由内核写入 dvHdd
     //!! opts.immediate 标记，立即落盘
     override async write(
         content: string,
-        opts?: PlainObject,
+        opts?: DvFsRegInodeWriteOptions,
         callCtx?: DvFsCallContext,
     ): Promise<boolean> {
         //写入需要 写 权限
@@ -86,7 +117,7 @@ export class DvRegInode extends DvInode {
     }
 
     //截断：将文件内容截断到指定长度，默认 0 清空
-    truncate(size: number = 0, callCtx?: DvFsCallContext): boolean {
+    async truncate(size: number = 0, callCtx?: DvFsCallContext): Promise<boolean> {
         //截断需要 写 权限
         if (!this.ac('truncate', callCtx)) return this._acDenied('truncate')
         //size 必须是 >= 0 的数字
@@ -96,24 +127,17 @@ export class DvRegInode extends DvInode {
         if (!this.inode._icache_) this.inode._icache_ = { handler: null }
         this.inode._icache_.content = str.slice(0, Math.floor(size))
         //内容修改时间戳（m）+ 脏标记
+        await dvWait(10)
         return this._setTimestamp('m', undefined, callCtx)
     }
 
-    //写磁盘方法
-    //!! 默认 针对 纯文本文件
-
-    //fsync 生成需要持久化的数据结构 DvFsHddStruct
-    protected override async _getFsyncContent?(
-        callCtx?: DvFsCallContext,
-    ): Promise<DvFsHddStruct | undefined> {
-        return useDvHddStore().toHddStruct(this.inode)
-    }
     //刷磁盘具体方法
-    protected override async _doFsync?(
-        content: DvFsHddStruct,
+    //!! 默认 针对 纯文本文件
+    //!! 使用 DvInode 默认的基类方法
+    /*protected override async _doFsync(
         dvHdd: DvHddStore,
         callCtx?: DvFsCallContext,
     ): Promise<boolean> {
-        return await dvHdd.fsync(this.ipath, content)
-    }
+        return await dvHdd.fsync(this.ipath)
+    }*/
 }

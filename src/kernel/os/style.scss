@@ -1,82 +1,49 @@
 @use '../../styles/common.scss' as *;
+@use './service/style.scss' as *;
 
-/* pre os-ready */
-.dv-kernel {
-    $fsz: 12;
+/* DvOs 启动阶段的全屏容器，本身不响应鼠标事件 */
+.dv-kernel-ui {
+    @include fixed-elm($l: 0, $t: 0);
+    pointer-events: none;
 
-    position: fixed;
-    width: 100vw;
-    height: 100vh;
+    * {
+        pointer-events: all;
+    }
+
+    //内容容器
+    .dv-kernel-content {
+        @include base-elm($w: 50vw, $h: 30vh, $mg: 48px 0);
+    }
+
+    //内核启动进度
+    .dv-kernel-progress {
+        $pw: 256;
+        $sz: 8;
+
+        @include base-elm($w: #{$pw}px, $h: #{$sz}px);
+        background-color: var(--dv-color-bg-dark);
+        border-radius: #{$sz * 0.5}px;
+
+        & > .progress-bar {
+            min-width: #{$sz}px;
+            height: #{$sz}px;
+            background-color: var(--dv-color-primary);
+            border-radius: #{$sz * 0.5}px;
+            transition: width var(--dv-ani-trans);
+        }
+    }
+}
+
+/* kernel-panic-error 蓝屏 */
+.dv-panic {
+    @include fixed-elm($l: 0, $t: 0);
+    @include flex-y;
     margin: 0;
     padding: 32px;
-    overflow: hidden;
-    box-sizing: border-box;
     z-index: 10000;
-    //background-color: #101010;
-    //color: #c0c0c0;
-    font-size: #{$fsz}px;
+    //红屏
+    background-color: var(--dv-color-danger);
+    color: #fff;
+    font-size: 14px;
     font-family: var(--dv-font-family-code);
-
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
-
-    & > div {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        min-height: #{$fsz + 2}px;
-        line-height: #{$fsz + 2}px;
-        overflow: hidden;
-        margin: 0;
-        padding: 0;
-
-        & > .dv-kernel-label {
-            min-width: #{$fsz * 10}px;
-            margin-right: #{$fsz}px;
-        }
-    }
-
-    .dv-kernel-logo {
-        min-height: #{$fsz * 4}px;
-    }
-
-    .dv-kernel-strong {
-        //min-height: #{$fsz + 8}px;
-        line-height: #{$fsz + 6}px;
-        font-size: #{$fsz + 2}px;
-        font-weight: bold;
-        color: var(--dv-color-white);
-        background-color: var(--dv-color-primary);
-    }
-
-    .dv-kernel-error {
-        color: var(--dv-color-danger);
-        font-weight: bold;
-    }
-
-    @keyframes cursor-blink {
-        0% {
-            opacity: 1;
-        }
-        30% {
-            opacity: 1;
-        }
-        50% {
-            opacity: 0;
-        }
-        80% {
-            opacity: 0;
-        }
-        100% {
-            opacity: 1;
-        }
-    }
-    .dv-kernel-cursor {
-        width: 8px;
-        background-color: var(--dv-color-text-regular);
-        animation-name: cursor-blink;
-        animation-duration: 1s;
-        animation-iteration-count: infinite;
-    }
 }
