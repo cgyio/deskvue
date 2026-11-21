@@ -1,6 +1,6 @@
 /**
  * Deskvue kernel
- * 由 DvCliKernelService 内核服务使用的 输入输出缓冲区 ioBuffer 操作工具
+ * 由 DvCliService 内核服务使用的 输入输出缓冲区 ioBuffer 操作工具
  *
  * !! ioBuffer 输入输出缓冲区实际内容保存在 内存树 /sys/buffer 节点，reg+ext 类型，*.buffer
  * !! 任意程序组件内部可以读取缓冲区内容，computed 只读
@@ -145,7 +145,14 @@ export interface DvIoPrintOptions {
     [K: string]: any
 }
 
-export const useDvIoBuffer = (hookGetter: DvProgramHookGetter) => {
+//用户输入命令时的额外参数
+export interface DvIoInputOptions {
+    [K: string]: any
+}
+
+export const useDvIoBuffer = <M extends PlainObject = PlainObject>(
+    hookGetter: DvProgramHookGetter<M>,
+) => {
     //!! 引用此 hook 的 内核服务 或 系统程序，拥有写入 ioBuffer 缓冲区的权限
     //!! 需要从 sysConfig 系统参数中读取对应的 service.cli 参数
     const ioConfig = computed<DvIoBufferConfig>(() => {
@@ -178,7 +185,7 @@ export const useDvIoBuffer = (hookGetter: DvProgramHookGetter) => {
 
     //解析用户输入命令后，向缓冲区输出内容
     //!! 此方法应由 命令行解释器 调用
-    const input = async (origin: string): Promise<void> => {
+    const input = async (origin: string, opts?: DvIoInputOptions): Promise<void> => {
         if (!origin || !dvIs.nemstr(origin)) return
         //TODO:
     }
@@ -309,8 +316,8 @@ export const useDvIoBuffer = (hookGetter: DvProgramHookGetter) => {
             if (cnt.startsWith('tab')) {
                 //tab 宽度
                 const tw = cnt.includes('tab x') ? parseInt(cnt.slice(5)) : 1
-                //行首，或前一个 cell 不是 tab 写入
-                if (cellidx <= 0 || (lcell && lcell.istab !== true)) {
+                //行首 直接 写入
+                if (cellidx <= 0 /* || (lcell && lcell.istab !== true)*/) {
                     celli.idx = cellidx
                     celli.content = ''
                     celli.istab = true
@@ -322,6 +329,7 @@ export const useDvIoBuffer = (hookGetter: DvProgramHookGetter) => {
                         lcell.tablength += tw
                     } else {
                         lcell.tabbed = true
+                        lcell.tablength += tw
                     }
                 }
             }
@@ -422,8 +430,11 @@ export const useDvIoBuffer = (hookGetter: DvProgramHookGetter) => {
                 if (cell.tabbed) {
                     //内容字符串长度(字符数)
                     const len = dvStrlen(cnt)
+                    //!! 字符长度补足到 tablength * tabw
+                    const ton = cell.tablength * tabw
+                    const n = len >= ton ? 0 : ton - len
                     //必须是 tabw 的整数倍，不足的补空格
-                    const n = len % tabw === 0 ? 0 : tabw - (len % tabw)
+                    //const n = len % tabw === 0 ? 0 : tabw - (len % tabw)
                     cnt = `${_escapeHtml(cnt)}${'&nbsp;'.repeat(n)}`
                 }
                 //普通

@@ -33,6 +33,7 @@ import {
     useDvServiceWatcher,
     useDvInstaller,
     useDvOsProvider,
+    type DvOsServiceExposed,
 } from './utils'
 import type {
     DvDirInode,
@@ -77,20 +78,20 @@ const props = withDefaults(defineProps<DvOsProps>(), {})
 //const ipu = useDvFsIpath()
 //程序基础 hook
 const dvProgram = useDvProgram(() => props)
-const { ioBuffer, sysConfig, userSession } = dvProgram
+const { sysCall, callService } = dvProgram
 //刷盘调度器
 const dvFlusher = useDvFlusher(() => dvProgram)
 const { startIntervalFlush, stopIntervalFlush } = dvFlusher
-//输出缓冲区
-const { print: ioPrint, printExtend: ioPrintExtend } = useDvIoBuffer(() => dvProgram)
 //系统服务守卫
 const dvSrvWatcher = useDvServiceWatcher(() => dvProgram)
 const {
-    services,
-    serviceAutoStartSequence,
+    //services,
+    //serviceAutoStartSequence,
     createKernelServiceInodes,
     createServiceInodes,
     autoStartServices,
+    awaitAutoStartServicesMounted,
+    exposed: serviceExposed,
 } = dvSrvWatcher
 //程序安装器
 const dvInstaller = useDvInstaller(() => dvProgram)
@@ -104,16 +105,6 @@ const { stage, errors, options } = globalThis.DvKernel
 //  5   os-mounting：DvOs 根组件挂载，挂载 内核服务，已收集到的 系统|用户 程序|服务
 //      服务全部注册到 services，出错抛内核错误
 const osMounting = async (): Promise<void> => {
-    //ioBuffer
-    await ioPrint('Deskvue Kernel starting', { isKernel: true })
-    await ioPrint('')
-    await ioPrint('VFS initing<{{tab x4}}>', { isKernel: true })
-    await dvWait(300)
-    await ioPrintExtend('<{{.green::<OK>}}>', { appendTs: true })
-    await ioPrint('OS initing<{{tab x4}}>', { isKernel: true })
-    await dvWait(300)
-    await ioPrintExtend('<{{.green::<OK>}}>', { appendTs: true })
-    await ioPrint('OS mounting<{{tab x4}}>', { isKernel: true })
     //挂载 内核服务
     await createKernelServiceInodes()
     stage.updateStageProgressInQueue(30, 3, 0)
@@ -123,7 +114,6 @@ const osMounting = async (): Promise<void> => {
     //挂载 已收集到的 系统|用户 程序
     await createProgramInodes()
     stage.updateStageProgressInQueue(30, 3, 2)
-    await ioPrintExtend('<{{.success::<OK>}}>', { appendTs: true })
 
     //!! 删除 globalProperties.$programs
     delete globalThis.DvApp.config.globalProperties.$programs
@@ -134,22 +124,34 @@ const osMounting = async (): Promise<void> => {
 }
 //  6   fs-ready：开始批量拉起 serviceInfo.autoStart == true 的服务程序
 const fsReady = async (): Promise<void> => {
-    await ioPrint('Service starting<{{tab x3}}>', { isKernel: true })
     //读取服务注册表 services 批量拉起 serviceInfo.autoStart == true 的服务程序
-    await autoStartServices()
-    stage.setStageProgress(45)
-    await ioPrintExtend('<{{.green::<OK>}}>', { appendTs: true })
+    const srvok = await autoStartServices()
+    if (srvok) {
+        //等待所有服务 mounted
+        const mntok = await awaitAutoStartServicesMounted()
+        if (mntok) {
+            stage.setStageProgress(45)
 
-    //内核状态 fs-ready -> service-ready
-    stage.stageNext()
-    await dvWait(10)
+            //内核状态 fs-ready -> service-ready
+            stage.stageNext()
+            await dvWait(10)
+        }
+        //!! 等待超时会报内核错误
+    }
+    //!! 系统服务未就绪 会报内核 panic
 }
 //  7   service-ready：所有系统服务已启动
 const serviceReady = async (): Promise<void> => {
+    //console.log('serviceReady')
+    await callService('cli', 'ioPrint', 'Services Ready')
+    await callService('cli', 'ioPrint', '')
+    await callService('cli', 'ioPrint', 'Deskvue Kernel Ready')
+    await callService('cli', 'ioPrint', '')
+    await callService('cli', 'ioPrint', 'Uac Login Starting')
     //内核状态 service-ready -> os-ready
     //  跳转 os-ready 触发 DvUacService 渲染登录界面
     //  内核启动阶段推进 转移到 DvUacService 组件内部
-    stage.stageNext()
+    stage.stageTo('os-ready')
     await dvWait(10)
 }
 
@@ -162,7 +164,7 @@ onMounted(async () => {
     try {
         await osMounting()
         await fsReady()
-        //await serviceReady()
+        await serviceReady()
 
         //!! panic 测试，蓝屏
         //throw new DvKernelError('手动模拟内核崩溃', { level: 'PANIC' })
@@ -173,19 +175,20 @@ onMounted(async () => {
 })
 
 //provide 向子组件暴露
-const { isDark, toggleDark, logo } = useDvOsProvider(() => dvProgram)
+const { env, isDark, toggleDark, logo } = useDvOsProvider(() => dvProgram)
 provide(DV_OS_PROVIDE, {
     stage: stage.stage,
     stageHook: stage,
 
-    services,
-    serviceSequence: serviceAutoStartSequence,
-    serviceWatcher: dvSrvWatcher,
+    service: serviceExposed,
+
     install: installUserProgram,
 
-    ioBuffer,
-    sysConfig,
-    userSession,
+    env,
+
+    //ioBuffer,
+    //sysConfig,
+    //userSession,
 
     isDark,
     toggleDark,
@@ -194,22 +197,25 @@ provide(DV_OS_PROVIDE, {
 
 //定义根组件实例类型
 export interface DvOsExposed {
-    //initService: () => Promise<void>
+    sysCall: (cmd: string, ...args: any[]) => any
+    service: DvOsServiceExposed
 }
 defineExpose<DvOsExposed>({
-    //initService,
+    sysCall,
+    service: serviceExposed,
 })
 </script>
 <template>
     <!-- 启动阶段显示 -->
-    <DvKernelUi v-if="stage.stageBefore('ready')" height="30vh">
-        <DvTerminal v-if="stage.stageBefore('login-start')"></DvTerminal>
-    </DvKernelUi>
-    <!-- service-ready 挂载 服务组件 -->
-    <template v-if="stage.stageAfter('service-ready', true)">
-        <template v-for="(srvi, srvn) of services" :key="`deskvue_service_${srvn}`">
+    <DvKernelUi v-if="stage.stageBefore('ready')" height="30vh"></DvKernelUi>
+    <!-- 挂载 服务组件 -->
+    <template v-if="stage.stageAfter('fs-ready', true)">
+        <template
+            v-for="(srvi, srvn) of serviceExposed.services.value"
+            :key="`deskvue_service_${srvn}`"
+        >
             <component
-                v-if="dvSrvWatcher.isServiceRunning(srvi.ipath)"
+                v-if="serviceExposed.isMountable(srvi.ipath)"
                 :is="srvi.name"
                 :pid="srvi.pid"
                 v-bind="srvi.props"

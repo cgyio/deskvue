@@ -96,10 +96,29 @@ export const useDvStage = <T extends string>(opts: DvStageOption<T>) => {
         //if (opts.onChange) opts.onChange(from, to, queue)
     }
     //stage 向后跳转
-    const stageNext = (): void => {
-        const to = queue?.[stageIdx.value + 1]
+    const stageNext = (skipError: boolean = false): void => {
+        let to = queue?.[stageIdx.value + 1]
         if (!to) return
-        stageTo(to)
+
+        //!! 跳过 *-error 标记，使用 next 方法可以跳过错误阶段
+        if (skipError) {
+            //如果 to 是 *-error 阶段标记，则继续跳转下一个
+            if (to.endsWith('-error')) {
+                let i = 2
+                to = queue?.[stageIdx.value + i]
+                while (!to || to.endsWith('-error') === true) {
+                    i++
+                    if (stageIdx.value + i >= queue.length - 1) break
+                    to = queue?.[stageIdx.value + i]
+                }
+            }
+            if (!!to) stageTo(to)
+        }
+
+        //直接 next
+        else {
+            stageTo(to)
+        }
     }
     //stage 判断
     const stageIs = (...stages: T[]): boolean => stages.includes(stage.value)

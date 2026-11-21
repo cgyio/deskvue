@@ -223,26 +223,25 @@ import {
     type DvFsInodeMemStruct,
     type DvFsInodeCreateOptions,
     dvFsEmptyInodeTime,
-    type DvFsSessionIcache,
+    //type DvFsSessionIcache,
 } from '../types'
 import { useDvFsIpath, useDvFsCreate, useDvFsCallCtx, useDvFsConver } from '../utils'
 import { dvConfig } from '../../config'
 import { useDvMemStore } from './dv-mem'
 import { dvIs, dvWait, dvExtend, dvCopy, dvLoget, dvTrimAny } from '@utils/core'
 
-//ipath 工具
-const ipu = useDvFsIpath()
-//获取 uSign
-const { uSign } = useDvFsCallCtx()
-//磁盘节点数据 与 内存节点数据 转换方法
-const { toMemStruct, toHddStruct } = useDvFsConver()
-
-//快速构建 文件节点 工具
-const { inode, dnode, fnode, pnode, sysDir, sysFile } = useDvFsCreate<'hdd'>('hdd')
-
 export const useDvHddStore = defineStore(
     'dvHdd',
     () => {
+        //ipath 工具
+        const ipu = useDvFsIpath()
+        //获取 uSign
+        const { uSign } = useDvFsCallCtx()
+        //磁盘节点数据 与 内存节点数据 转换方法
+        const { toMemStruct, toHddStruct } = useDvFsConver()
+        //快速构建 文件节点 工具
+        const { inode, dnode, fnode, pnode, sysDir, sysFile } = useDvFsCreate<'hdd'>('hdd')
+
         //模拟 Linux 系统的 FS 文件系统行为
         //!! 定义 持久化(保存到磁盘 dvHdd)的文件系统
         //!! 在 fs-initing 阶段，会将此处保存的文件系统结构，整体搬到内存树 dvMem.fs
@@ -614,48 +613,8 @@ export const useDvHddStore = defineStore(
             return true
         }
 
-        //!! 这些方法需要移动到 内存接口中 dvMemStore
-        //系统设置数据，如果用户已登录，则会合并用户设置，computed 只读
-        /*const sysConfig = computed<PlainObject | undefined>(() => {
-            const conf = fs['/sys/config']?._content_
-            const usign = uSign()
-            if (!usign || !fs[usign]) return conf
-            const uconf = fs[usign]['/sys/config'] ?? {}
-            //!! dvExtend 会原地修改 target，必须以 {} 作为 target，避免污染全局配置
-            return dvExtend({}, conf ?? {}, uconf)
-        })
-        //数据库|数据模型 schema，如果用户已登录，则会合并用户设置
-        const getDbSchema = (db: string, model?: string): PlainObject | undefined => {
-            const ipath = `/mnt/${db}${model ? '/' + model : ''}`
-            const schema = fs[ipath]
-            const usign = uSign()
-            if (!usign || !fs[usign]) return schema
-            const uschema = fs[usign][ipath] ?? {}
-            //!! dvExtend 会原地修改 target，必须以 {} 作为 target，避免污染全局 schema
-            return dvExtend({}, schema ?? {}, uschema)
-        }
-        //用户登录后，获取用户安装的 program 节点列表，返回内存树结构 DvFsMemStruct[]
-        const getUserProgramInodes = (): DvFsMemStruct[] => {
-            const usign = uSign()
-            if (!usign || !fs[usign] || !fs[usign].program) return []
-            const uprog = fs[usign].program
-            if (!dvIs.nemobj(uprog)) return []
-            //将 dvHdd 数据转换为 dvMem 数据
-            const rtn: DvFsMemStruct[] = []
-            for (const pn in uprog) {
-                const pi = uprog[pn]
-                if (!pi || !pi._content_) continue
-                const mpi = toMemStruct(pi)
-                if (!mpi) continue
-                rtn.push(mpi)
-            }
-            return rtn
-        }*/
-
         //写入磁盘
-
         //将传入的 DvFsMemStruct 内存树节点，按 ipath 写入 dvHdd.fs
-        //const fsync = async (ipath: string, fnode: DvFsHddStruct): Promise<boolean> => {
         const fsync = async (inode: DvFsMemStruct): Promise<boolean> => {
             const ipath = inode._ipath_
 

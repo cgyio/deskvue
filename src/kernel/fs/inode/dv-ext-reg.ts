@@ -20,6 +20,8 @@ import {
     type DvFsCallContext,
     type DvFsRegInodeReadOptions,
     type DvFsRegInodeWriteOptions,
+    type DvFsMemStruct,
+    type DvFsHddStruct,
 } from '../types'
 import { dvMimes } from '../mime'
 import { useDvFsAc, type DvFsAcHook, type DvFsAcFn } from '../utils'
@@ -90,24 +92,39 @@ export class DvExtRegInode extends DvRegInode {
 
         //先检查 脏标记
         if (this.inode._inode_.modi === 1) {
-            //优先从 缓存读取
-            const cached = this.inode._icache_?.content
-            if (!dvIs.plainObject(cached)) return {}
-            content = dvJsonCopy(cached)
+            content = this.readContentFromMem()
         }
 
         //从 dvHdd 读文件内容
         else {
-            const fnode = useDvHddStore().addr(this.ipath)
-            if (!fnode || !fnode._content_) return this._krError(`文件 ${this.ipath} 不存在`)
-            if (!dvIs.plainObject(fnode._content_)) {
-                return this._krError(`文件 ${this.ipath} 内容不是有效的 json 对象`)
-            }
-            content = dvJsonCopy(fnode._content_ as PlainObject)
+            content = this.readContentFromHdd()
         }
 
         //根据额外参数，输出文件内容
         if (!dvIs.nemobj(content)) return {}
+
+        //根据 opts 返回对应的 内容
+        return this.fixContentByOpts(content, opts)
+    }
+    //read|readSync 相关工具方法
+    //!! 可能被外部调用，不能是 私有方法
+    //从内存 读取文件内容
+    readContentFromMem(): PlainObject {
+        const cached = this.inode._icache_?.content
+        if (!dvIs.plainObject(cached)) return {}
+        return dvJsonCopy(cached)
+    }
+    //从 dvHdd 读取文件内容
+    readContentFromHdd(): PlainObject {
+        const fnode = useDvHddStore().addr(this.ipath)
+        if (!fnode || !fnode._content_) return this._krError(`文件 ${this.ipath} 不存在`)
+        if (!dvIs.plainObject(fnode._content_)) {
+            return this._krError(`文件 ${this.ipath} 内容不是有效的 json 对象`)
+        }
+        return dvJsonCopy(fnode._content_ as PlainObject)
+    }
+    //在 read 获取完整文件内容后，根据传入的 DvFsRegInodeReadOptions 处理文件内容
+    fixContentByOpts(content: PlainObject, opts?: DvFsRegInodeReadOptions): any {
         //仅输出指定的 key
         if (opts?.keys !== undefined && opts.keys.length > 0) {
             const cnt: PlainObject = {}
@@ -118,10 +135,12 @@ export class DvExtRegInode extends DvRegInode {
             }
             content = cnt
         }
+
         //输出 json 字符串
         if (opts?.stringify === true) {
             return JSON.stringify(content)
         }
+
         //默认
         return content
     }

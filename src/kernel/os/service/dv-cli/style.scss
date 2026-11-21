@@ -24,8 +24,10 @@
     --dv-term-fsz: 14px;
 
     @include base-elm($w: 100%, $h: 100%, $pd: var(--dv-term-fsz), $ov: hidden auto);
+    @include flex-y;
+    justify-content: flex-end;
     //背景色 跟随系统
-    background-color: var(--dv-color-bg);
+    //background-color: var(--dv-color-bg);
     color: var(--dv-color-text-regular);
     font-size: var(--dv-term-fsz);
     font-family: var(--dv-font-family-code);
@@ -33,7 +35,7 @@
     //buffer-row
     & > .dv-buffer-row {
         @include base-elm;
-        //width: 100%;
+        width: 100%;
         min-height: calc(var(--dv-term-fsz) + 4px);
         @include flex-x;
         flex-wrap: wrap;
@@ -118,6 +120,10 @@
                 color: var(--dv-color-text-regular);
             }
 
+            & > .cursor {
+                background-color: var(--dv-color-bg);
+            }
+
             @each $c in $tw-color-all-names {
                 $cln: color-name($c);
                 $clr: get-color($c);
@@ -141,4 +147,14 @@
             }
         }
     }
+}
+
+/* 全屏 terminal */
+.dv-fullscreen-terminal {
+    @include fixed-elm;
+    overflow: hidden auto;
+    z-index: 10000;
+    //background-color: var(--dv-color-bg);
+    //color: var(--dv-color-text-regular);
+    //padding: 32px;
 }

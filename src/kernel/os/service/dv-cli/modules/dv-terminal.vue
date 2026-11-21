@@ -30,31 +30,44 @@ import type {
     DvRegInode,
     useDvFsIpath,
 } from '../../../../fs'
-import { DV_OS_PROVIDE, type DvOsProvide } from '../../../types'
-import type { DvIoOutputRow } from '../../../utils'
+import {
+    useDvOsProvide,
+    type DvIoBuffer,
+    type DvIoBufferConfig,
+    type DvIoOutputRow,
+} from '../../../utils'
 
 defineOptions({
     name: 'DvTerminal',
 })
 
-//DvOs injection
-const osInjects = inject(DV_OS_PROVIDE, {} as DvOsProvide)
-const { stageHook, logo, ioBuffer } = osInjects
+//DvOs provide
+const osInjects = useDvOsProvide()
+const { stageHook, logo, env } = osInjects
 
 //props
 export interface DvTerminalProps {
     fsize?: number
     tabw?: number
 }
-const props = withDefaults(defineProps<DvTerminalProps>(), {
-    fsize: 14,
-    tabw: 4,
+const props = withDefaults(defineProps<DvTerminalProps>(), {})
+
+//ioBuffer
+const ioBuffer = computed<DvIoBuffer | undefined>(() => env.cli?.ioBuffer.value)
+//ioConfig
+const ioConfig = computed<DvIoBufferConfig | undefined>(() => env.cli?.ioConfig.value)
+//props
+const fsizeProp = computed<number>(() => {
+    return props.fsize === undefined ? (ioConfig.value?.fsize ?? 14) : props.fsize
+})
+const tabwProp = computed<number>(() => {
+    return props.tabw === undefined ? (ioConfig.value?.tabw ?? 14) : props.tabw
 })
 
 //buffer html
 const bufferHtml = computed<string>(() => {
     const html: string[] = []
-    if (ioBuffer.value.length <= 0) return ''
+    if (!ioBuffer.value || ioBuffer.value.length <= 0) return ''
     for (const row of ioBuffer.value) {
         //output
         if ((row as DvIoOutputRow).cells !== undefined) {
@@ -72,5 +85,11 @@ const bufferHtml = computed<string>(() => {
 })
 </script>
 <template>
-    <div class="dv-terminal" v-html="bufferHtml"></div>
+    <div
+        class="dv-terminal"
+        :style="{
+            '--dv-term-fsz': `${fsizeProp}px`,
+        }"
+        v-html="bufferHtml"
+    ></div>
 </template>

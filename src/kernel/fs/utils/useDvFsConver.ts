@@ -12,11 +12,12 @@ import {
     type DvFsInodeMemStruct,
     type DvFsInodeCreateOptions,
     dvFsEmptyInodeTime,
-    type DvFsSessionIcache,
+    //type DvFsSessionIcache,
 } from '../types'
 import { useDvFsIpath, useDvFsCallCtx } from './index'
 import { dvConfig } from '../../config'
 import { useDvMemStore, useDvHddStore } from '../stores'
+import { dvMimes } from '../mime'
 import { type DvIoBuffer } from '../../os'
 import { dvIs, dvWait, dvExtend, dvCopy, dvLoget, dvTrimAny } from '@utils/core'
 
@@ -37,10 +38,8 @@ const loadContentItypes = [
 ]
 
 //特殊转换方法的定义结构
-export interface DvFsSpecificConversion {
-    toMem: (inode: DvFsHddStruct, recursive: boolean) => DvFsMemStruct
-    toHdd: (inode: DvFsMemStruct, recursive: boolean) => DvFsHddStruct
-}
+export type DvFsConvertorToMem = (inode: DvFsHddStruct, recursive: boolean) => DvFsMemStruct
+export type DvFsConvertorToHdd = (inode: DvFsMemStruct, recursive: boolean) => DvFsHddStruct
 
 export const useDvFsConver = () => {
     //获取某个节点的复合类型 mode+extra.type
@@ -55,9 +54,11 @@ export const useDvFsConver = () => {
     //!! 默认 recursive = false 仅转换当前节点，返回的节点数据中不包含子节点
     const toMemStruct = (inode: DvFsHddStruct, recursive: boolean = false): DvFsMemStruct => {
         //先检查是否是特殊节点转换
-        const specConver = getSpecificConver(inode)
-        if (specConver && typeof specConver?.toMem === 'function') {
-            return specConver.toMem(inode, recursive)
+        if (inode._inode_.mode === 'reg') {
+            const specConvertor = getSpecificRegConvertor(inode, 'toMem')
+            if (specConvertor) {
+                return (specConvertor as DvFsConvertorToMem)(inode, recursive)
+            }
         }
 
         const mem: DvFsMemStruct = {
@@ -98,9 +99,11 @@ export const useDvFsConver = () => {
     }
     const toHddStruct = (inode: DvFsMemStruct, recursive: boolean = false): DvFsHddStruct => {
         //先检查是否是特殊节点转换
-        const specConver = getSpecificConver(inode)
-        if (specConver && typeof specConver?.toHdd === 'function') {
-            return specConver.toHdd(inode, recursive)
+        if (inode._inode_.mode === 'reg') {
+            const specConvertor = getSpecificRegConvertor(inode, 'toHdd')
+            if (specConvertor) {
+                return (specConvertor as DvFsConvertorToHdd)(inode, recursive)
+            }
         }
 
         //生成持久化结构
@@ -160,91 +163,26 @@ export const useDvFsConver = () => {
         return hdd as DvFsHddStruct
     }
 
-    //!! 一些特殊节点的 特殊转换方法
-    //!! 可以使用 ipath 或 mode+type 作为键名，来指向特殊转换方法
-    const specificConver: Record<string, DvFsSpecificConversion> = {
-        //sys/buffer 文件节点，不保存 content，构建内存树时，自动生成 _icache_.buffer = []
-        '/sys/buffer': {
-            toMem: (inode: DvFsHddStruct, recursive: boolean = false): DvFsMemStruct => {
-                const mem: DvFsMemStruct = {
-                    _ipath_: inode._ipath_,
-                    _inode_: dvExtend<DvFsInodeMemStruct>(false, {}, inode._inode_, {
-                        modi: 0,
-                        lock: 0,
-                        open: [],
-                    }),
-                    _icache_: {
-                        //!! 内存树中 _icache_ 结构固定
-                        handler: null,
-                        content: '',
-                        buffer: [] as DvIoBuffer,
-                    },
-                }
-                return mem
-            },
-            toHdd: (inode: DvFsMemStruct, recursive: boolean = false): DvFsHddStruct => {
-                const hdd: DvFsHddStruct = {
-                    _ipath_: inode._ipath_,
-                    _inode_: dvExtend<DvFsInodeHddStruct>(false, {}, inode._inode_, {
-                        modi: '__delete__',
-                        lock: '__delete__',
-                        open: '__delete__',
-                    }),
-                    //!! ioBuffer 不持久化，磁盘中不保存任何内容
-                    _content_: '',
-                }
-                return hdd
-            },
-        },
-        //sys/session 文件节点
-        '/sys/session': {
-            toMem: (inode: DvFsHddStruct, recursive: boolean = false): DvFsMemStruct => {
-                const mem: DvFsMemStruct = {
-                    _ipath_: inode._ipath_,
-                    _inode_: dvExtend<DvFsInodeMemStruct>(false, {}, inode._inode_, {
-                        modi: 0,
-                        lock: 0,
-                        open: [],
-                    }),
-                    _icache_: dvExtend<DvFsSessionIcache>(
-                        false,
-                        {
-                            handler: null,
-                            content: {},
-                        },
-                        inode._content_ ?? {},
-                    ),
-                }
-                return mem
-            },
-            toHdd: (inode: DvFsMemStruct, recursive: boolean = false): DvFsHddStruct => {
-                const hdd: DvFsHddStruct = {
-                    _ipath_: inode._ipath_,
-                    _inode_: dvExtend<DvFsInodeHddStruct>(false, {}, inode._inode_, {
-                        modi: '__delete__',
-                        lock: '__delete__',
-                        open: '__delete__',
-                    }),
-                    _content_: dvExtend(false, {}, inode._icache_, {
-                        handler: '__delete__',
-                    }),
-                }
-                return hdd
-            },
-        },
-    }
-
-    //获取可能存在的 特殊转换方法
-    const getSpecificConver = (
+    //!! 一些特殊的 reg 节点类型，可能定义了 特殊转换方法
+    //!! 通常定义在 useDv[Type][Mime] (例如：useDvExtBuffer) 扩展 reg 类型 hook 工具中
+    const getSpecificRegConvertor = (
         inode: DvFsMemStruct | DvFsHddStruct,
-    ): DvFsSpecificConversion | undefined => {
-        const ipath = inode._ipath_
-        const itype = getItype(inode)
-        //优先通过 ipath 查找特殊转换方法
-        const conver = specificConver?.[ipath]
-        if (conver !== undefined) return conver
-        //然后通过 itype 查找特殊转换方法
-        return specificConver?.[itype]
+        method: 'toMem' | 'toHdd',
+    ): DvFsConvertorToHdd | DvFsConvertorToMem | undefined => {
+        const mode = inode._inode_.mode
+        if (mode !== 'reg') return undefined
+        const type = inode._inode_.extra?.type
+        let mime = inode._inode_.extra?.mime
+        if (!type || !mime) return undefined
+        if (mime.startsWith('*.')) mime = mime.slice(2)
+        //hook 工具集键名形式：ext/buffer -> reg+ext, *.buffer
+        const key = `${dvTrimAny(type, '/')}/${dvTrimAny(mime, '/')}`
+        const hookDef = dvMimes?.[key]
+        if (!hookDef) return undefined
+        //外部调用 reg 扩展类型 hook 中定义的 toMem|toHdd 转换方法时，不需要传入 handler 句柄实例
+        const hook = hookDef(undefined)
+        if (!hook?.[method] || typeof hook[method] !== 'function') return undefined
+        return hook[method]
     }
 
     return {
@@ -254,6 +192,6 @@ export const useDvFsConver = () => {
         toMemStruct,
         toHddStruct,
 
-        specificConver,
+        getSpecificRegConvertor,
     }
 }

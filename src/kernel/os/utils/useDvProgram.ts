@@ -20,22 +20,24 @@ import {
     type ComponentPublicInstance,
 } from 'vue'
 import { computedAsync } from '@vueuse/core'
-import { dvTriggerKernelError } from '../../error'
+import { dvTriggerKernelError, DvKernelError } from '../../error'
 import {
     type DvProgramRegInode,
     useDvMemStore,
     type DvFsMemStruct,
     type DvFsProgramMeta,
     type DvFsCallContext,
-    type DvFsSessionIcache,
+    type DvSessionStruct,
     type DvProcess,
     useDvFsIpath,
     type DvInodeHandler,
     useDvInodeHandler,
+    useDvFsCallCtx,
 } from '../../fs'
 import { type DvConfigDefine, dvConfig } from '../../config'
 import type { DvIoBuffer } from './useDvIoBuffer'
-import { dvIs, dvWait } from '@/utils'
+import { dvIs, dvUntil, dvWait } from '@/utils'
+import type { DvOsServiceExposed } from '..'
 
 //!! 所有 program 组建的 props 类型必须继承自此
 export interface DvProgramComponentProps {
@@ -45,8 +47,13 @@ export interface DvProgramComponentProps {
     [K: string]: any
 }
 
+//program hook 实例类型，泛型 M 指定程序私有内存 memory 的结构类型
+//!! typeof useDvProgram<M> 是 TS 的「实例化表达式」，可把类型实参直接传给 typeof 的函数
+//!! 直接写 ReturnType<typeof useDvProgram> 时，M 会退化为约束|默认值 PlainObject
+export type DvProgramHook<M extends PlainObject = PlainObject> = ReturnType<typeof useDvProgram<M>>
+
 //program 组件内部 programHook 实例的获取方法
-export type DvProgramHookGetter = () => ReturnType<typeof useDvProgram>
+export type DvProgramHookGetter<M extends PlainObject = PlainObject> = () => DvProgramHook<M>
 
 //调用其他程序时，获取目标程序的相关实例 类型
 export interface DvCallProgramIns {
@@ -138,6 +145,11 @@ export const useDvProgram = <M extends PlainObject = PlainObject>(
             dvMem.program[pid.value] = { ...value, pid: pid.value }
         },
     })
+    //在程序启动时，初始化私有内存结构
+    const initMemory = async (init: M): Promise<void> => {
+        memory.value = init ?? ({} as M)
+        await dvWait(10)
+    }
 
     //在任意程序组件内部，读取 一些特殊系统文件的 内容
     //特殊节点 /sys/buffer 输入输出缓冲区
@@ -187,8 +199,13 @@ export const useDvProgram = <M extends PlainObject = PlainObject>(
     //特殊节点 /sys/session 当前会话数据
     //!! 如果用户还未登录，则返回的是上一次用户登录的 历史会话记录
     //!! 在用户登录之前，可能需要使用上一次登录的会话信息，比如 iso 项目标识，用以填充登录表单
-    const userSession = computed<DvFsSessionIcache | undefined>(() => {
-        return useDvMemStore().addrSession()?._icache_
+    const userSession = computed<DvSessionStruct | undefined>(() => {
+        //return useDvMemStore().addrSession()?._icache_
+        const session = sysCall('fs:$', '/sys/session') as
+            | DvInodeHandler<'DvExtRegInode'>
+            | undefined
+        if (!session) return {} as DvSessionStruct
+        return session.readSync({}, callCtx.value)
     })
 
     //sysCall 在任意程序内部执行 调用内核接口
@@ -196,12 +213,18 @@ export const useDvProgram = <M extends PlainObject = PlainObject>(
     //!! 仅在程序运行时能获取到
     const callCtx = computed<DvFsCallContext | undefined>(() => {
         if (!pid.value || !ipath.value) return undefined
+        //直接调用 useDvFsCallCtx 工具，生成 callCtx
+        return useDvFsCallCtx().create(ipath.value)
+
         //!! 指定 caller 用户登录之前是 root ，登录后传 '' ，自动转为 用户 uSign
+        /*const caller = globalThis.DvKernel.stage.stageBefore('is-login')
+            ? 'root'
+            : (useDvFsCallCtx().uSign() ?? '')
         return {
-            caller: globalThis.DvKernel.stage.stageBefore('is-login') ? 'root' : '',
+            caller,
             program: ipath.value,
             pid: pid.value,
-        } as DvFsCallContext
+        } as DvFsCallContext*/
     })
     //!! program 组件内部通过 sysCall 调用内核接口
     const sysCall = (cmd: string, ...args: any[]): any => {
@@ -306,12 +329,14 @@ export const useDvProgram = <M extends PlainObject = PlainObject>(
             }
             //要调用的目标程序的 方法
             const callFn = instance?.$?.exposed?.[method]
-            if (!callFn || typeof callFn !== 'function') {
+            if (!callFn) {
                 dvTriggerKernelError(
-                    `发生内核错误，在要调用的目标程序 ${name} 上没有找到方法 ${method}`,
+                    `发生内核错误，未找到目标程序 ${name} 上的方法或属性 ${method}`,
                 )
                 return undefined
             }
+            //对于 目标程序组件实例，可以调用其 defineExpose 暴露的 方法 或 属性
+            if (typeof callFn !== 'function') return callFn
             //调用
             return callFn(...args)
         }
@@ -359,19 +384,32 @@ export const useDvProgram = <M extends PlainObject = PlainObject>(
     const callProgramSysCall = (key: string, cmd: string, ...args: any[]): any => {
         return callProgram(key, 'sysCall', cmd, ...args)
     }
+    //快速调用 service 服务守卫，挂在 prog0 程序组件实例 exposed.service
+    //!! 找不到则内核 panic ，服务守卫必须存在
+    const _getSrvWatcher = (): DvOsServiceExposed => {
+        const service = callProgram('/sys/prog0', 'service') as DvOsServiceExposed
+        if (!service) {
+            throw new DvKernelError(`发生内核错误，无法获取根进程服务管理器`, { level: 'PANIC' })
+        }
+        return service
+    }
     //快捷调用：调用服务程序
     const callService = (srvn: string, method: string, ...args: any[]): any => {
-        const dvMem = useDvMemStore()
-        const ipath = dvMem.addrInProgram(srvn)?._ipath_
-        if (!ipath) {
-            dvTriggerKernelError(`发生内核错误，未找到服务 ${srvn}`)
+        //!! 服务程序必须是已注册的服务
+        const service = _getSrvWatcher()
+        //查找已注册服务
+        //!! 传入的 srvn 支持服务短名称：cli --> DvCliService
+        //也可以是 ipath
+        const srv = service.info(srvn)?.value
+        if (!srv) {
+            dvTriggerKernelError(`发生内核错误，未找到要调用的服务 ${srvn}`)
             return undefined
         }
-        const pid = dvMem.getPidsByIpath(ipath)?.[0]
-        if (!pid) {
-            dvTriggerKernelError(`发生内核错误，未找到服务 ${srvn} 的进程实例`)
+        if (service.isRunning(srv.name) !== true) {
+            dvTriggerKernelError(`发生内核错误，要调用的服务 ${srvn} 未启动`)
             return undefined
         }
+        const pid = srv.pid
         return callProgram(pid, method, ...args)
     }
     //快捷调用：调用服务的 sysCall
@@ -381,11 +419,35 @@ export const useDvProgram = <M extends PlainObject = PlainObject>(
 
     //程序组件生命周期 通用方法
     //!! 组件内部需要 定义并 defineExpose 暴露这些方法，必须是异步方法
+    //!! 程序组件内部不要定义 onMounted|onUnmounted 方法
     //组件实例挂载完成后，在 onMounted 内部调用
-    //const afterInstanceSetted = async (): Promise<void> => {}
+    //const afterProgramMounted = async (): Promise<void> => {}
     //组件实例从 内存卸载之前，在 onUnmounted 内部调用
     //!! 必须返回 boolean ，false 表示不能正确卸载，会触发内核错误
-    //const beforeInstanceUnset = async (): Promise<boolean> => {}
+    //const beforeProgramUnmount = async (): Promise<boolean> => {}
+
+    //在此程序依赖的所有服务 mounted 之后执行
+    //!! 在 afterProgramMounted 方法内一定是 依赖就绪后，因此不需要手动写此方法
+    //!! 在组件内其他方法内部，如果要执行与 dependency 依赖服务相关的操作时，应包裹在此方法内部
+    const afterDependencyReady = async (callback: () => Promise<any>): Promise<any> => {
+        //prog0 直接跳过
+        if (ipath.value === '/sys/prog0') return await callback()
+
+        //dependency
+        const deps = meta.value?.dependency ?? []
+        if (!deps || deps.length <= 0) return await callback()
+
+        //需要等待
+        const service = _getSrvWatcher()
+        try {
+            //等待 5s
+            await dvUntil(() => service.isMounted(...deps), 5000)
+            return await callback()
+        } catch (e: any) {
+            //dvUntil 超时
+            return dvTriggerError(new Error(`等待程序 ${pname.value} 依赖的服务超时`), false)
+        }
+    }
 
     //set|unsetProgramInstance 挂载|卸载 程序组件实例到 内存 dvMem.programInstance[pid]
     const setProgramInstance = async (): Promise<boolean> => {
@@ -395,13 +457,49 @@ export const useDvProgram = <M extends PlainObject = PlainObject>(
             if (!dvMem.programInstance?.[pid.value]) {
                 dvMem.programInstance[pid.value] = programPublic
                 await dvWait(10)
-                const after = programPublic?.$?.exposed?.afterInstanceSetted
+
+                //!! 排除 prog0 根程序，根程序不需要后续流程
+                if (ipath.value === '/sys/prog0') return true
+
+                //其他程序或服务在启动时，需要访问 prog0 根进程的 服务管理器
+                //!! prog0 根进程在内存树刚建立之后就会启动，因此一定存在，不存在则内核 PANIC
+                const service = _getSrvWatcher()
+
+                //!! 任意程序或服务，都必须等待依赖的其他服务就绪
+                const deps = meta.value?.dependency ?? []
+                if (deps.length > 0) {
+                    //!! 等待所有依赖的 服务就绪
+                    try {
+                        //等待 5s
+                        await dvUntil(() => service.isMounted(...deps), 5000)
+                    } catch (e: any) {
+                        //dvUntil 超时
+                        return dvTriggerError(
+                            new Error(`程序 ${pname.value} 无法挂载组件，等待依赖的服务超时`),
+                            false,
+                            false,
+                        )
+                    }
+                }
+
+                //!! 服务程序需要向服务管理器上报就绪
+                if (meta.value?.isService === true) {
+                    service.setMounted(pname.value as string)
+                    await dvWait(10)
+                }
+
+                //开始执行各程序自有的 初始化方法
+                const after = programPublic?.$?.exposed?.afterProgramMounted
                 if (typeof after === 'function' && dvIs.asyncfunction(after)) {
                     await after()
                 }
             }
             return true
         }
+        //!! 在挂载程序组件实例时，未传入 pid
+        dvTriggerKernelError(
+            `发生内核错误，挂载程序 ${programName} 的组件实例时发生错误，未获取到进程 PID`,
+        )
         return false
     }
     const unsetProgramInstance = async (): Promise<boolean> => {
@@ -409,7 +507,14 @@ export const useDvProgram = <M extends PlainObject = PlainObject>(
         if (pid.value) {
             const dvMem = useDvMemStore()
             if (dvMem.programInstance?.[pid.value]) {
-                const before = programPublic?.$?.exposed?.beforeInstanceUnset
+                //针对 prog0 根进程，直接卸载
+                if (ipath.value === '/sys/prog0') {
+                    delete dvMem.programInstance[pid.value]
+                    return true
+                }
+
+                //其他程序，先执行自有的 程序退出方法
+                const before = programPublic?.$?.exposed?.beforeProgramUnmount
                 if (typeof before === 'function' && dvIs.asyncfunction(before)) {
                     const canUnset = await before()
                     if (!canUnset) {
@@ -417,12 +522,24 @@ export const useDvProgram = <M extends PlainObject = PlainObject>(
                         dvTriggerKernelError(`发生内核错误，程序 ${pname.value} 不能正确退出`)
                         return false
                     }
-                    //卸载组件实例
-                    delete dvMem.programInstance[pid.value]
                 }
+
+                //如果是服务程序，还需要上报卸载
+                if (meta.value?.isService === true) {
+                    const service = _getSrvWatcher()
+                    service.setStopped(pname.value as string)
+                }
+
+                //最后卸载组件实例
+                delete dvMem.programInstance[pid.value]
+                await dvWait(10)
             }
             return true
         }
+        //!! 在挂载程序组件实例时，未传入 pid，一般不可能
+        dvTriggerKernelError(
+            `发生内核错误，卸载程序 ${programName} 的组件实例时发生错误，未获取到进程 PID`,
+        )
         return false
     }
 
@@ -451,6 +568,7 @@ export const useDvProgram = <M extends PlainObject = PlainObject>(
         isProgram,
 
         memory,
+        initMemory,
 
         ioBuffer,
         sysConfig,
@@ -465,7 +583,8 @@ export const useDvProgram = <M extends PlainObject = PlainObject>(
         callService,
         callServiceSysCall,
 
-        //afterInstanceSetted,
-        //beforeInstanceUnset,
+        //afterProgramMounted,
+        //beforeProgramUnmount,
+        afterDependencyReady,
     }
 }

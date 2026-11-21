@@ -4,11 +4,21 @@
  */
 
 import { type DvInodeHandler } from '../inode'
+
 import { useDvExtBuffer } from './useDvExtBuffer'
+import { useDvExtConf } from './useDvExtConf'
+import { useDvExtSession } from './useDvExtSession'
 
 //定义 mime|ext hook 类型
 export type DvMimeHook = (handler: any) => PlainObject
 
 export const dvMimes: Record<string, DvMimeHook> = {
     'ext/buffer': useDvExtBuffer,
+    'ext/conf': useDvExtConf,
+    'ext/session': useDvExtSession,
 }
+
+//导出类型
+export type * from './useDvExtBuffer'
+export type * from './useDvExtConf'
+export type * from './useDvExtSession'

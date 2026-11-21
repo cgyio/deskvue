@@ -17,14 +17,18 @@
 import { type App } from 'vue'
 
 //!! 内核服务 系列组件
-import DvCliKernelService from './dv-cli/index.vue'
-import DvUacKernelService from './dv-uac/index.vue'
+import DvCliService from './dv-cli/index.vue'
+import DvFlushService from './dv-flush/index.vue'
+import DvPmService from './dv-pm/index.vue'
+import DvUacService from './dv-uac/index.vue'
 
 //Deskvue 内核服务 组件库注册表
 //!! 启动顺序 按 这里定义的顺序
 export const dvKernelServices = {
-    DvCliKernelService,
-    DvUacKernelService,
+    DvCliService,
+    DvFlushService,
+    DvPmService,
+    DvUacService,
 }
 //内核服务 组件名类型
 export type DvKernelServiceName = keyof typeof dvKernelServices
@@ -43,4 +47,6 @@ export const setupDvKernelServices = (app: App<Element>): void => {
 
 //导出类型
 export type * from './dv-cli/index.vue'
+export type * from './dv-flush/index.vue'
+export type * from './dv-pm/index.vue'
 export type * from './dv-uac/index.vue'

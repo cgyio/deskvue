@@ -48,8 +48,8 @@ import type {
     DvFsPidItem,
     DvFsProgramRegInodeIcache,
     DvFsProgramType,
-    DvFsMemSessionStruct,
 } from '../types'
+import type { DvSessionStruct } from '../mime'
 import type { DvConfigDefine } from '../../config'
 import { useDvFsIpath, useDvFsPid } from '../utils'
 import { dvIs, dvWait, dvExtend, dvCopy, dvLoget, dvTrimAny } from '@utils/core'
@@ -102,11 +102,20 @@ export const useDvMemStore = defineStore(
             //!! 仅记录 [fid] !== _inode_.name 的节点 ipath
             //'_inode_.name': ['/foo/bar', '/foo/bar/jaz', 一定是不同目录下的节点],
         })
+        //mime 缓存，建立 mime|ext -> programNode._ipath_ 映射
+        const mimeMap = reactive<Record<string, string[]>>({
+            //'*.conf': ['/sys/prog0'],
+            //'image/png': ['/program/DvImgViewer'],
+        })
+        //外部暴露只读的 mimeMap
+        const _mimeMap = readonly(mimeMap)
         //pid 缓存，建立 pid -> programNode._ipath_ 映射
         //!! 在程序 启动 和 停止 时，需要更新此缓存
         const pidCache = reactive<Record<string, string>>({
             //'prog_[program_name]_md5({props})': '/program/FooBar',
         })
+        //暴露只读
+        const _pidCache = readonly(pidCache)
 
         //内存接口，实际操作内存 store ，无权鉴
         //!! 权鉴由 文件句柄类 Dv***Inode 内部执行
@@ -301,12 +310,10 @@ export const useDvMemStore = defineStore(
             return undefined
         }
         //内存寻址，快速返回当前的 session 会话数据，只有用户登录成功后才能获取到
-        const addrSession = (): DvFsMemSessionStruct | undefined => {
-            const stage = globalThis.DvKernel.stage
-            if (!stage || stage.stageBefore('is-login')) return undefined
-            const session = addr('/sys/session') as DvFsMemSessionStruct
+        const addrSession = (): DvSessionStruct | undefined => {
+            const session = addr('/sys/session')
             if (!session || !isInode(session)) return undefined
-            return session
+            return session._icache_.content as DvSessionStruct | undefined
         }
         //获取指定 inode 节点下的有效的子节点，返回 fid[]
         const inodeChildFids = (inode: DvFsMemStruct): string[] => {
@@ -831,6 +838,28 @@ export const useDvMemStore = defineStore(
             if (!inode || !isProgramInode(inode)) return false
             return inode._icache_ && inode._icache_.program && dvIs.nemobj(inode._icache_.program)
         }
+        //将某个程序节点的 mimes[] 添加到 mimeMap 映射缓存
+        const setMimeMap = (ipath: string, mimes?: string[]): boolean => {
+            if (mimes === undefined) {
+                //programMeta
+                const meta = programMeta(ipath)
+                if (!meta) return false
+                mimes = meta.mimes ?? []
+            }
+            if (!mimes || mimes.length <= 0) return true
+            for (const mime of mimes) {
+                let mmap: string[]
+                if (mimeMap?.[mime] === undefined) {
+                    mimeMap[mime] = [] as string[]
+                    mmap = mimeMap[mime]
+                } else {
+                    mmap = mimeMap[mime]
+                }
+                if (mmap.includes(ipath)) continue
+                mmap.push(ipath)
+            }
+            return true
+        }
         //在 program 指向的组件内部，访问自有的内存空间
         const getProgramMem = <T extends PlainObject>(pid: string): T | undefined => {
             //按 pid 获取对应的内存数据，响应式
@@ -1045,6 +1074,8 @@ export const useDvMemStore = defineStore(
         return {
             fs: _fs,
             modiCache: _modiCache,
+            mimeMap: _mimeMap,
+            pidCache: _pidCache,
 
             isInode,
             isProgramInode,
@@ -1084,6 +1115,7 @@ export const useDvMemStore = defineStore(
             programType,
             programMeta,
             programRunning,
+            setMimeMap,
             getProgramMem,
             createProgramMem,
             releaseProgramMem,

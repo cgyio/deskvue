@@ -21,7 +21,9 @@ import { dvIs, dvExtend, dvCopy, dvWait } from '@/utils'
 //刷盘定时器
 let intervalFlusher: ReturnType<typeof setInterval> | null = null
 
-export const useDvFlusher = (hookGetter: DvProgramHookGetter) => {
+export const useDvFlusher = <M extends PlainObject = PlainObject>(
+    hookGetter: DvProgramHookGetter<M>,
+) => {
     //!! 确保只有 /sys/prog0 可以调用此 hook
     const _isProg0 = (): boolean => {
         const hook = hookGetter()

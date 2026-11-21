@@ -1,6 +1,6 @@
 /**
  * Deskvue kernel
- * 由 prog0 系统程序使用的 程序安装器
+ * 由 prog0 和 DvPmService 内核服务使用的 程序安装器
  * 将 内核服务程序，以及收集到的 系统|用户 服务|程序，挂载到内存树对应节点
  * 在用户登录后 user-initing 阶段，将用户自行安装的 程序|服务 挂载到内存树对应节点
  */
@@ -22,7 +22,9 @@ import { dvIs, dvExtend, dvCopy, dvWait } from '@/utils'
 //程序定义的 来源类型
 export type DvFsProgFrom = /*'install' | */ 'user' | 'sys' | 'kernel'
 
-export const useDvInstaller = (hookGetter: DvProgramHookGetter) => {
+export const useDvInstaller = <M extends PlainObject = PlainObject>(
+    hookGetter: DvProgramHookGetter<M>,
+) => {
     //处理 程序|服务 组件的 programMeta
     //!! 会自动覆盖一些参数，生成最终的 meta 参数用于程序节点挂载
     const progMeta = (from: DvFsProgFrom, meta: DvFsProgramMeta): DvFsProgramMeta => {
@@ -136,6 +138,7 @@ export const useDvInstaller = (hookGetter: DvProgramHookGetter) => {
         return (await hookGetter().sysCall('fs:open', dirIpath)) as DvInodeHandler<'DvDirInode'>
     }
 
+    const dvMem = useDvMemStore()
     //挂载某个程序节点，到目录句柄
     const createProgInode = async (
         from: DvFsProgFrom,
@@ -157,17 +160,19 @@ export const useDvInstaller = (hookGetter: DvProgramHookGetter) => {
         }
         //创建
         const hdl = await dir.create<'DvProgramRegInode'>(meta.name, opts, hook.callCtx.value)
+        //!! 如果未传入 dir 则需要关闭之前开启的 dir 句柄
+        if (!hasdir) await hook.sysCall('fs:close', dir)
+
         //创建失败
         if (!hdl) return false
 
         //创建成功
-        //!! 如果未传入 dir 则需要关闭之前开启的 dir 句柄
-        if (!hasdir) {
-            await hook.sysCall('fs:close', dir)
-        }
         //!! meta 写入 icache
         hdl.inode._icache_.meta = dvCopy(meta) as DvFsProgramMeta
         await dvWait(10)
+
+        //!! 将此程序节点支持的 mimes[] 注册到全局的 mimeMap
+        dvMem.setMimeMap(hdl.ipath, meta.mimes ?? [])
 
         //执行 afterMount 钩子
         if (typeof afterMount === 'function') {
@@ -236,6 +241,7 @@ export const useDvInstaller = (hookGetter: DvProgramHookGetter) => {
     }
 
     //用户登录之前 os-mounting 阶段批量挂载收集到的 系统|用户 程序到 /program 节点
+    //!! 由 prog0 根程序调用
     const createProgramInodes = async (
         afterMount?: (handler: DvInodeHandler<'DvProgramRegInode'>) => Promise<void>,
     ): Promise<void> => {
@@ -259,6 +265,7 @@ export const useDvInstaller = (hookGetter: DvProgramHookGetter) => {
     }
 
     //用户登录之后，在 user-initing 阶段将用户自行安装的 程序 挂载到对应节点
+    //!! 由 DvPmService 程序管理服务调用
     const installUserProgram = async (
         //传入保存在用户目录下的 程序安装文件节点句柄 reg+ext 类型，*.progi
         //或者传入安装文件节点的 ipath

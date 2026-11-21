@@ -9,15 +9,37 @@
  */
 
 import { type DvInodeHandler } from '../index'
-import type { DvFsCallContext, DvFsRegInodeReadOptions, DvFsRegInodeWriteOptions } from '../types'
+import type {
+    DvFsRegInodeReadOptions,
+    DvFsRegInodeWriteOptions,
+    DvFsMemStruct,
+    DvFsHddStruct,
+    DvFsInodeMemStruct,
+    DvFsInodeHddStruct,
+    DvFsInodeIcache,
+    DvFsCallContext,
+    //DvFsSessionIcache,
+    DvFsUsign,
+    DvFsUserProfile,
+    DvFsIsoInfo,
+} from '../types'
 import { type DvIoBuffer, type DvIoInputRow, type DvIoOutputRow } from '../../os/utils'
 import { dvIs, dvExtend, dvJsonCopy, dvWait } from '@/utils'
 
-export const useDvExtBuffer = (handler: DvInodeHandler<'DvExtRegInode'>) => {
+export const useDvExtBuffer = (handler?: DvInodeHandler<'DvExtRegInode'>) => {
     //readSync 同步读
     const readSync = (opts?: DvFsRegInodeReadOptions, callCtx?: DvFsCallContext): DvIoBuffer => {
+        if (!handler) return [] as DvIoBuffer
+
         //!! 返回拷贝
-        return dvJsonCopy(handler.inode._icache_.buffer ?? []) as DvIoBuffer
+        let buffer = dvJsonCopy(handler.inode._icache_.buffer ?? []) as DvIoBuffer
+
+        //!! 如果传入 opts.filter 方法
+        if (opts?.filter && typeof opts.filter === 'function') {
+            buffer = buffer.filter(opts.filter)
+        }
+
+        return buffer
     }
 
     //write
@@ -27,6 +49,8 @@ export const useDvExtBuffer = (handler: DvInodeHandler<'DvExtRegInode'>) => {
         opts?: DvFsRegInodeWriteOptions,
         callCtx?: DvFsCallContext,
     ): Promise<boolean> => {
+        if (!handler) return false
+
         //写入内存
         if (
             handler.inode._icache_.buffer === undefined ||
@@ -69,6 +93,8 @@ export const useDvExtBuffer = (handler: DvInodeHandler<'DvExtRegInode'>) => {
     //truncate
     //!! 外部的 cli 服务根据 maxRows 截断 DvIoBuffer 数组
     const truncate = async (size: number, callCtx?: DvFsCallContext): Promise<boolean> => {
+        if (!handler) return false
+
         const buffer = handler.inode._icache_.buffer as DvIoBuffer
         if (buffer.length <= size) return true
         //从 尾部 向前 截断
@@ -76,9 +102,45 @@ export const useDvExtBuffer = (handler: DvInodeHandler<'DvExtRegInode'>) => {
         return true
     }
 
+    //!! 特殊的 节点数据结构转换方法
+    //toMem 内存节点构建时 特殊转换方法
+    const toMem = (inode: DvFsHddStruct, recursive: boolean = false): DvFsMemStruct => {
+        const mem: DvFsMemStruct = {
+            _ipath_: inode._ipath_,
+            _inode_: dvExtend<DvFsInodeMemStruct>(false, {}, inode._inode_, {
+                modi: 0,
+                lock: 0,
+                open: [],
+            }),
+            _icache_: {
+                //!! 内存树中 _icache_ 结构固定
+                handler: handler ?? null,
+                content: '',
+                buffer: [] as DvIoBuffer,
+            },
+        }
+        return mem
+    }
+    //toHdd 缓冲区节点不会刷盘，此处仅转换节点数据
+    const toHdd = (inode: DvFsMemStruct, recursive: boolean = false): DvFsHddStruct => {
+        const hdd: DvFsHddStruct = {
+            _ipath_: inode._ipath_,
+            _inode_: dvExtend<DvFsInodeHddStruct>(false, {}, inode._inode_, {
+                modi: '__delete__',
+                lock: '__delete__',
+                open: '__delete__',
+            }),
+            //!! ioBuffer 不持久化，磁盘中不保存任何内容
+            _content_: {},
+        }
+        return hdd
+    }
+
     return {
         readSync,
         write,
         truncate,
+        toMem,
+        toHdd,
     }
 }

@@ -27,7 +27,7 @@
  */
 
 import { dvTriggerKernelError } from '../../error'
-import type { DvFsMemStruct, DvFsCallContext, DvFsCaller } from '../types'
+import type { DvFsMemStruct, DvFsCallContext, DvFsCaller, DvFsUsign } from '../types'
 import { useDvMemStore } from '../stores'
 import { useDvFsAc } from './useDvFsAc'
 import { dvIs, dvCopy, dvExtend } from '@utils/core'
@@ -118,7 +118,7 @@ export const useDvFsCallCtx = () => {
             }
 
             //用户标识 iso:uuid 保存在 /sys/session 文件中
-            const usign = dvMem.addrSession()?._icache_?.uSign
+            const usign = uSign() //dvMem.addrSession()?._icache_?.uSign
             if (!usign) {
                 dvTriggerKernelError(`发生内核错误，无法读取当前会话信息`)
                 return undefined
@@ -194,9 +194,9 @@ export const useDvFsCallCtx = () => {
 
     //从 dvMem.fs.sys.session 中读取当前登录用户的 uSign
     //!! 只能在 is-login 之后读取，否则返回 undefined
-    const uSign = (): string | undefined => {
+    const uSign = (): DvFsUsign | undefined => {
         if (globalThis.DvKernel.stage.stageBefore('is-login')) return undefined
-        return useDvMemStore().addrSession()?._icache_.uSign
+        return useDvMemStore().addrSession()?.uSign
     }
 
     //解析 callCtx 得到对应的 pidCache

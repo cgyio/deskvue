@@ -134,6 +134,27 @@ export const sysCall = {
         }
         return program.getProcess(pid, callCtx)
     },
+
+    //停止 program 节点，sysCall('fs:stop', '/foo/bar', pid, {...})
+    //!! 如果不指定进程 pid 则杀掉此程序的所有运行进程
+    stop: async function (
+        ipath: string | DvFsMemStruct,
+        pid?: string,
+        props?: PlainObject,
+    ): Promise<boolean> {
+        //获取 program 节点句柄
+        const callCtx = this as unknown as DvFsCallContext
+        const program = useDvInodeHandler<'DvProgramRegInode'>(ipath, callCtx)?.handler
+        if (!program) {
+            dvTriggerKernelError(
+                `发生内核错误，未找到要执行的程序节点 ${typeof ipath === 'string' ? ipath : ''}`,
+                'OOPS',
+            )
+            return false
+        }
+        //调用句柄 kill 方法
+        return await program.kill(pid, callCtx)
+    },
 }
 
 //定义 Deskvue FS 文件系统 初始化入口方法
@@ -213,6 +234,8 @@ const _execProg0 = async (options?: DvFsInitOption): Promise<boolean> => {
 export { useDvMemStore, useDvHddStore }
 //导出所有句柄类
 export * from './inode'
+//导出所有 reg+ext|mime 扩展类型
+export * from './mime'
 //导出 FS 工具
 export * from './utils'
 

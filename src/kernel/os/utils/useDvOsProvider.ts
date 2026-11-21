@@ -1,10 +1,11 @@
 /**
  * Deskvue kernel
  * 由 根组件 DvOs 使用， 向全局 provide 数据
+ * !! 其中的 env 可以由 service 服务程序修改，所有后代组件都可以获取到修改后的 env
  *
  */
 
-import { ref, reactive, computed, watch, onMounted, nextTick, provide } from 'vue'
+import { ref, shallowReactive, computed, watch, onMounted, nextTick, provide } from 'vue'
 import { useDark, useToggle } from '@vueuse/core'
 import { DvKernelError } from '../../error'
 import {
@@ -16,7 +17,8 @@ import {
     type DvFsInodeCreateOptions,
     type DvProcess,
 } from '../../fs'
-import { type DvProgramHookGetter } from './useDvProgram'
+import { type DvProgramHookGetter } from './index'
+import { type DvOsEnv } from '../types'
 import { dvIs, dvExtend, dvCopy, dvWait } from '@/utils'
 
 //输出的 logo 数据格式
@@ -26,7 +28,17 @@ export type DvLogoProvide = {
     expand: string
 }
 
-export const useDvOsProvider = (hookGetter: DvProgramHookGetter) => {
+export const useDvOsProvider = <M extends PlainObject = PlainObject>(
+    hookGetter: DvProgramHookGetter<M>,
+) => {
+    //全局环境变量
+    //!! 必须使用 shallowReactive，不能使用 reactive：
+    //!!   reactive 会自动解包嵌套的 ref/computed（env.cli.ioBuffer 会被解包成普通数组），
+    //!!   而各服务向 env 中写入的正是 ref|computed，且需要把 ref 原样暴露给后代组件。
+    //!! shallowReactive 只把根属性（env.cli 等）转为响应式，不会解包嵌套的 ref。
+    //!! 服务通过整体赋值 env.cli = {...} 写入，根属性变化可以被正常追踪
+    const env = shallowReactive<DvOsEnv>({})
+
     //全局 暗黑模式
     //isDark
     const isDark = useDark()
@@ -78,6 +90,8 @@ export const useDvOsProvider = (hookGetter: DvProgramHookGetter) => {
     })
 
     return {
+        env,
+
         isDark,
         darkToggling,
         darkToggleDura,

@@ -83,7 +83,8 @@ import {
     type DvFsProgramType,
 } from '../types'
 import { DvKernelError } from '../../error'
-import { useDvFsIpath, useDvFsAc, type DvFsAcHook, type DvFsAcFn } from '../utils'
+import { useDvFsIpath, useDvFsAc, type DvFsAcHook, type DvFsAcFn, useDvFsPid } from '../utils'
+import type { DvOsServiceExposed } from '../../os'
 import { dvIs, dvExtend } from '@utils/core'
 
 //program 程序运行状态
@@ -168,6 +169,19 @@ export class DvProgramRegInode extends DvRegInode {
         return useDvMemStore().programMeta(this.ipath)
     }
 
+    //根据外部传入的 程序启动 props 参数，生成 pid 并检查这个 pid 是否已经存在
+    //!! 用于 exec 方法中的 快速判断是要创建新进程
+    //!! 如果需要新建进程，返回 true ，否则返回原有 pid
+    //!! 如果返回 false 表示发生错误，无法创建 pid，exec 方法需要报错
+    private _needNewProcess(props?: PlainObject): boolean | string {
+        const pid = useDvFsPid().createPid(this.ipath, props)
+        if (!pid) return false
+        const dvMem = useDvMemStore()
+        if (dvMem.program?.[pid] !== undefined || dvMem.pidCache?.[pid] !== undefined) {
+            return pid
+        }
+        return true
+    }
     //校验文件 mime|*.ext 是否命中 programMeta.mimes[]
     private _mimeMatches(fnode: DvFsMemStruct): boolean {
         const meta = this.getMeta()
@@ -191,8 +205,38 @@ export class DvProgramRegInode extends DvRegInode {
     async exec(props?: PlainObject, callCtx?: DvFsCallContext): Promise<string | undefined> {
         //执行需要 x 权限
         if (!this.ac('exec', callCtx)) return this._acDenied('exec')
+
+        //先快速判断是否需要新建进程
+        const opid = this._needNewProcess(props)
+        if (opid === false) {
+            return this._krError(`无法启动程序 ${this.inode._icache_.meta?.name} ，发生未知错误`)
+        }
+        //不需要新建进程，直接返回原有的进程 pid
+        if (opid !== true) return opid
+
+        //!! 处理依赖的服务
+        const dvMem = useDvMemStore()
+        const meta = this.getMeta()
+        //dependency 依赖项一定是已注册的服务程序
+        const deps = meta?.dependency
+        if (deps && deps.length > 0) {
+            //!! 需要使用 prog0 根进程的 service 管理功能
+            const prog0Pid = dvMem.getPidsByIpath('/sys/prog0')?.[0]
+            const prog0Ins = dvMem.programInstance?.[prog0Pid ?? '']
+            if (!prog0Pid || !prog0Ins || !prog0Ins.$.exposed?.service) {
+                return this._krError(
+                    `无法启动程序 ${meta.name} 依赖的服务，因为找不到根进程服务管理器`,
+                )
+            }
+            const service = prog0Ins.$.exposed.service as DvOsServiceExposed
+            const depOk = await service.startAll(deps, false, callCtx)
+            if (!depOk) {
+                return this._krError(`无法启动程序 ${meta.name} ，因为依赖的服务启动失败`)
+            }
+        }
+
         //组装 pid 并初始化运行时内存
-        return await useDvMemStore().setMemOnProgramStart(this.ipath, props)
+        return await dvMem.setMemOnProgramStart(this.ipath, props)
     }
 
     //终止：停止 pid 对应的实例，未指定 pid 则停止全部实例

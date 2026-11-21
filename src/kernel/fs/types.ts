@@ -755,7 +755,7 @@ export interface DvFsIsoInfo {
 }
 
 //用户登录后的 session 会话文件 _icache_ 内容结构
-export interface DvFsSessionIcache extends DvFsInodeIcache {
+export interface _DvFsSessionIcache extends DvFsInodeIcache {
     //登录用户的 信息
     uuid: Uuid
     //uSign 用户标识 iso:uuid 形式
@@ -767,6 +767,6 @@ export interface DvFsSessionIcache extends DvFsInodeIcache {
 }
 
 //会话文件节点 数据类型
-export interface DvFsMemSessionStruct extends DvFsMemStruct {
-    _icache_: DvFsSessionIcache
+export interface _DvFsMemSessionStruct extends DvFsMemStruct {
+    _icache_: _DvFsSessionIcache
 }
